@@ -35,5 +35,6 @@ if service_name not in [s.service_name for s in sms.list_hosted_services()]:
         log.error("Hosted service '%s' has already been provisioned"
                   " by another user.", service_name)
         sys.exit(1)
-else:
-    log.info("Reusing existing hosted service: '%s'", service_name)
+
+cloud_service = sms.get_hosted_service_properties(service_name)
+log.info("Using hosted service '%s' at: %s", service_name, cloud_service.url)
