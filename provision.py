@@ -6,6 +6,9 @@ import logging
 
 from azure import WindowsAzureConflictError
 from azure.servicemanagement import ServiceManagementService
+from azure.servicemanagement import OSVirtualHardDisk
+from azure.servicemanagement import LinuxConfigurationSet
+
 
 FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
@@ -14,6 +17,10 @@ log = logging.getLogger()
 
 subscription_id = os.environ['AZURE_SUBSCRIPTION_ID']
 location = os.environ.get('AZURE_DEFAULT_LOCATION', 'West US')
+
+# Choose the latest ubuntu from sms.list_os_images()
+image_name = ('b39f27a8b8c64d52b05eac6a62ebad85'
+              '__Ubuntu-12_10-amd64-server-20130227-en-us-30GB')
 
 certificate_path = os.path.expanduser('~/mycert.pem')
 
@@ -38,3 +45,9 @@ if service_name not in [s.service_name for s in sms.list_hosted_services()]:
 
 cloud_service = sms.get_hosted_service_properties(service_name)
 log.info("Using hosted service '%s' at: %s", service_name, cloud_service.url)
+
+virtual_hd = OSVirtualHardDisk(image_name)
+
+# XXX: change the password: read it from os.environ or generate a random one
+# to be printed on stdout
+linux_config = LinuxConfigurationSet('master', 'ipython', 'secret', True)
