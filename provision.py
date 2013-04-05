@@ -17,6 +17,7 @@ log = logging.getLogger()
 
 subscription_id = os.environ['AZURE_SUBSCRIPTION_ID']
 location = os.environ.get('AZURE_DEFAULT_LOCATION', 'West US')
+role_size = os.environ.get('AZURE_DEFAULT_ROLE_SIZE', 'Small')
 
 # Choose the latest ubuntu from sms.list_os_images()
 image_name = ('b39f27a8b8c64d52b05eac6a62ebad85'
@@ -46,8 +47,19 @@ if service_name not in [s.service_name for s in sms.list_hosted_services()]:
 cloud_service = sms.get_hosted_service_properties(service_name)
 log.info("Using hosted service '%s' at: %s", service_name, cloud_service.url)
 
-virtual_hd = OSVirtualHardDisk(image_name)
+os_hd = OSVirtualHardDisk(image_name)
 
 # XXX: change the password: read it from os.environ or generate a random one
 # to be printed on stdout
-linux_config = LinuxConfigurationSet('master', 'ipython', 'secret', True)
+linux_config = LinuxConfigurationSet('master', 'ipython', 'secretA1,!', True)
+
+
+sms.create_virtual_machine_deployment(
+    service_name=service_name,
+    deployment_name=service_name,
+    deployment_slot='production',
+    label=service_label,
+    role_name=service_name,
+    system_config=linux_config,
+    os_virtual_hard_disk=os_hd,
+    role_size=role_size)
