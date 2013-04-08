@@ -5,9 +5,11 @@ import sys
 import logging
 
 from azure import WindowsAzureConflictError
+from azure import WindowsAzureError
 from azure.servicemanagement import ServiceManagementService
 from azure.servicemanagement import OSVirtualHardDisk
 from azure.servicemanagement import LinuxConfigurationSet
+from azure.storage import BlobService
 
 
 FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
@@ -26,16 +28,19 @@ image_name = ('b39f27a8b8c64d52b05eac6a62ebad85'
 certificate_path = os.path.expanduser('~/mycert.pem')
 
 # Connect to the Azure platform and check that the location is valid
+log.info("Checking availability of location: '%s'", location)
 sms = ServiceManagementService(subscription_id, certificate_path)
 assert location in [l.name for l in sms.list_locations()]
 
 # Provision an hosted service
-service_name = 'ipythonparalleldemo3'
+service_name = sys.argv[1]
 affinity_group = service_name
-service_label = 'ipython-parallel-demo'
-description = 'IPython.parallel demo for Windows Azure'
+target_blob_name = service_name + ".vhd"
+service_label = service_name
+description = 'Provisioning test from the Windows Azure Python SDK'
 
 # Create an affinity group for all the services related to this project
+log.info("Checking availability of affinity group: '%s'", affinity_group)
 if affinity_group not in [ag.name for ag in sms.list_affinity_groups()]:
     try:
         log.info("Creating new affinity_group: '%s'", affinity_group)
@@ -46,6 +51,7 @@ if affinity_group not in [ag.name for ag in sms.list_affinity_groups()]:
         sys.exit(1)
 
 # Provision de hosted service itself if not already existing
+log.info("Checking availability of hosted service: '%s'", service_name)
 if service_name not in [s.service_name for s in sms.list_hosted_services()]:
     try:
         log.info("Creating new hosted service: '%s'", service_name)
@@ -63,6 +69,7 @@ log.info("Using hosted service '%s' at: %s", service_name, cloud_service.url)
 
 # Create a storage account if none is found for the given service
 
+log.info("Checking availability of storage account: '%s'", service_name)
 storage_accounts = [sa.service_name for sa in sms.list_storage_accounts()]
 if service_name not in storage_accounts:
     try:
@@ -75,19 +82,30 @@ if service_name not in storage_accounts:
                   " by another user.", service_name)
         sys.exit(1)
 
-# os_hd = OSVirtualHardDisk(image_name, "http://ipythonparalleldemo.blob.core.windows.net/os_image")
+log.info("Fetching keys for storage account: '%s'", service_name)
+keys = sms.get_storage_account_keys(service_name)
 
-# # XXX: change the password: read it from os.environ or generate a random one
-# # to be printed on stdout
-# linux_config = LinuxConfigurationSet('master', 'ipython', 'secretA1,!', True)
+blob_service = BlobService(account_name=service_name,
+                           account_key=keys.storage_service_keys.primary)
+blob_service.create_container('osimage')
+os_image_url = "http://{}.blob.core.windows/osimage/{}".format(
+    service_name, target_blob_name)
 
+# XXX: change the password: read it from os.environ or generate a random one
+# to be printed on stdout
+linux_config = LinuxConfigurationSet('hostname', 'username', 'secretA1,!', True)
+# linux_config.ssh = None
 
-# sms.create_virtual_machine_deployment(
-#     service_name=service_name,
-#     deployment_name=service_name,
-#     deployment_slot='production',
-#     label=service_label,
-#     role_name=service_name,
-#     system_config=linux_config,
-#     os_virtual_hard_disk=os_hd,
-#     role_size=role_size)
+log.info("Using OS image at: %s", os_image_url)
+os_hd = OSVirtualHardDisk(image_name, os_image_url, disk_label=target_blob_name)
+
+log.info("Provisioning virtual machine deployment %s", service_name)
+sms.create_virtual_machine_deployment(
+    service_name=service_name,
+    deployment_name=service_name,
+    deployment_slot='production',
+    label=service_label,
+    role_name=service_name,
+    system_config=linux_config,
+    os_virtual_hard_disk=os_hd,
+    role_size=role_size)
