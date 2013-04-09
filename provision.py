@@ -88,7 +88,7 @@ keys = sms.get_storage_account_keys(service_name)
 blob_service = BlobService(account_name=service_name,
                            account_key=keys.storage_service_keys.primary)
 blob_service.create_container('osimage')
-os_image_url = "http://{}.blob.core.windows/osimage/{}".format(
+os_image_url = "http://{}.blob.core.windows.net/osimage/{}".format(
     service_name, target_blob_name)
 
 # XXX: change the password: read it from os.environ or generate a random one
