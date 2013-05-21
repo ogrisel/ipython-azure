@@ -25,8 +25,7 @@ location = os.environ.get('AZURE_DEFAULT_LOCATION', 'West US')
 role_size = os.environ.get('AZURE_DEFAULT_ROLE_SIZE', 'Small')
 
 # Choose the latest ubuntu from sms.list_os_images()
-image_name = ('b39f27a8b8c64d52b05eac6a62ebad85'
-              '__Ubuntu-12_10-amd64-server-20130227-en-us-30GB')
+image_name = None
 
 certificate_path = os.path.expanduser('~/mycert.pem')
 
@@ -118,7 +117,12 @@ os_image_url = "http://{}.blob.core.windows.net/vhds/{}".format(
 linux_config = LinuxConfigurationSet('hostname', 'username', 'secretA1,!', True)
 # linux_config.ssh = None
 
-log.info("Using OS image at: %s", os_image_url)
+if image_name is None:
+    # Select the last Ubuntu daily build
+    image_name = [i.name for i in sms.list_os_images()
+                          if 'Ubuntu_DAILY_BUILD' in i.name][-1]
+
+log.info("Using OS image '%s' at: %s", image_name, os_image_url)
 os_hd = OSVirtualHardDisk(image_name, os_image_url, disk_label=target_blob_name)
 
 log.info("Provisioning virtual machine deployment %s", service_name)
