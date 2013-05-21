@@ -92,15 +92,20 @@ if storage_account_name not in storage_accounts:
 
 log.info("Fetching keys for storage account: '%s'", storage_account_name)
 n_tries = 3
-sleep_duration = 5
+sleep_duration = 10
+keys = None
 for i in range(n_tries):
     try:
         keys = sms.get_storage_account_keys(storage_account_name)
         break
     except WindowsAzureMissingResourceError:
-        log.info("Not found (%d/%d), retrying in %ds...", i + i, n_tries,
+        log.info("Not found, retrying (%d/%d) in %ds...", i + 1, n_tries,
                  sleep_duration)
         time.sleep(sleep_duration)
+if keys is None:
+    log.error("Failed to fetch keys for storage account '%s'",
+              storage_account_name)
+    sys.exit(1)
 
 blob_service = BlobService(account_name=storage_account_name,
                            account_key=keys.storage_service_keys.primary)
