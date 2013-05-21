@@ -1,10 +1,13 @@
 #!/usr/bin/env python
 
+import re
 import os
 import sys
 import logging
+import time
 
 from azure import WindowsAzureConflictError
+from azure import WindowsAzureMissingResourceError
 from azure import WindowsAzureError
 from azure.servicemanagement import ServiceManagementService
 from azure.servicemanagement import OSVirtualHardDisk
@@ -39,6 +42,10 @@ target_blob_name = service_name + ".vhd"
 service_label = service_name
 description = 'Provisioning test from the Windows Azure Python SDK'
 
+storage_account_name = re.sub('\W', '', service_name)
+storage_account_name = storage_account_name.replace('_', '')
+storage_account_name = storage_account_name[:24]
+
 # Create an affinity group for all the services related to this project
 log.info("Checking availability of affinity group: '%s'", affinity_group)
 if affinity_group not in [ag.name for ag in sms.list_affinity_groups()]:
@@ -69,27 +76,37 @@ log.info("Using hosted service '%s' at: %s", service_name, cloud_service.url)
 
 # Create a storage account if none is found for the given service
 
-log.info("Checking availability of storage account: '%s'", service_name)
+log.info("Checking availability of storage account: '%s'", storage_account_name)
 storage_accounts = [sa.service_name for sa in sms.list_storage_accounts()]
-if service_name not in storage_accounts:
+if storage_account_name not in storage_accounts:
     try:
-        log.info("Creating new storage account: '%s'", service_name)
-        sms.create_storage_account(service_name,
+        log.info("Creating new storage account: '%s'", storage_account_name)
+        sms.create_storage_account(storage_account_name,
             "Blob store for " + service_name, service_label,
             affinity_group=affinity_group)
     except WindowsAzureConflictError:
         log.error("Storage Account '%s' has already been provisioned"
-                  " by another user.", service_name)
+                  " by another user.", storage_account_name)
         sys.exit(1)
 
-log.info("Fetching keys for storage account: '%s'", service_name)
-keys = sms.get_storage_account_keys(service_name)
 
-blob_service = BlobService(account_name=service_name,
+log.info("Fetching keys for storage account: '%s'", storage_account_name)
+n_tries = 3
+sleep_duration = 5
+for i in range(n_tries):
+    try:
+        keys = sms.get_storage_account_keys(storage_account_name)
+        break
+    except WindowsAzureMissingResourceError:
+        log.info("Not found (%d/%d), retrying in %ds...", i + i, n_tries,
+                 sleep_duration)
+        time.sleep(sleep_duration)
+
+blob_service = BlobService(account_name=storage_account_name,
                            account_key=keys.storage_service_keys.primary)
-blob_service.create_container('osimage')
-os_image_url = "http://{}.blob.core.windows.net/osimage/{}".format(
-    service_name, target_blob_name)
+blob_service.create_container('vhds')
+os_image_url = "http://{}.blob.core.windows.net/vhds/{}".format(
+    storage_account_name, target_blob_name)
 
 # XXX: change the password: read it from os.environ or generate a random one
 # to be printed on stdout
