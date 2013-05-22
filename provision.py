@@ -3,19 +3,22 @@
 import random
 import re
 import os
-import sys
 import logging
 import time
 import string
 
 from azure import WindowsAzureConflictError
 from azure import WindowsAzureMissingResourceError
-from azure import WindowsAzureError
 from azure.servicemanagement import ServiceManagementService
 from azure.servicemanagement import OSVirtualHardDisk
 from azure.servicemanagement import LinuxConfigurationSet
+from azure.servicemanagement import ConfigurationSet
+from azure.servicemanagement import ConfigurationSetInputEndpoint
 from azure.storage import BlobService
 
+DEFAULT_PORTS = (
+    ('ssh', 'tcp', '22', '22'),
+)
 
 FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
@@ -23,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format=FORMAT)
 log = logging.getLogger()
 
 
-class NodeController(object):
+class Provisioner(object):
     """Controller class to provision an IPython cluster."""
 
     def __init__(self, service_name=None, storage_account_name=None,
@@ -69,8 +72,9 @@ class NodeController(object):
         self.sms = ServiceManagementService(subscription_id, certificate_path)
         self.provisioning_requests = []
 
-    def provision_node(self, role_size='Small'):
-        """Provision a new node for the cluster"""
+    def launch_node(self, role_size='Small', ports_config=DEFAULT_PORTS,
+                    async=False):
+        """Launch a new instance for the service"""
         # Provision an hosted service
         target_blob_name = self.service_name + ".vhd"
         service_label = self.service_name
@@ -86,7 +90,7 @@ class NodeController(object):
                 log.info("Creating new affinity_group: '%s'",
                     self.affinity_group)
                 self.sms.create_affinity_group(self.affinity_group,
-                    service_label, location, description)
+                    service_label, self.location, description)
             except WindowsAzureConflictError:
                 raise RuntimeError(
                     "Affinity Group '%s' has already been provisioned" %
@@ -159,6 +163,12 @@ class NodeController(object):
         linux_config = LinuxConfigurationSet('hostname', 'username',
             self.password, True)
 
+        network_config = ConfigurationSet()
+        network_config.configuration_set_type = 'NetworkConfiguration'
+        for port_rule in ports_config:
+            network_config.input_endpoints.input_endpoints.append(
+                ConfigurationSetInputEndpoint(*port_rule))
+
         if self.image_name is None:
             # Select the last Ubuntu daily build
             self.image_name = [i.name for i in self.sms.list_os_images()
@@ -178,9 +188,24 @@ class NodeController(object):
                 label=service_label,
                 role_name=self.service_name,
                 system_config=linux_config,
+                network_config=network_config,
                 os_virtual_hard_disk=os_hd,
                 role_size=role_size)
             self.provisioning_requests.append(request.request_id)
         except WindowsAzureConflictError:
             raise RuntimeError("Service '%s' has already been deployed" %
                                self.service_name)
+        if not async:
+            self._wait_for_async(request.request_id)
+
+    def destroy_node(self):
+        """Destroy any running instance and related provisioned resources"""
+        pass
+
+    def _wait_for_async(self, request_id, expected=('Succeeded',)):
+        result = self.sms.get_operation_status(request_id)
+        while result.status == 'InProgress':
+            time.sleep(5)
+            result = self.sms.get_operation_status(request_id)
+        if result.status not in expected:
+            raise RuntimeError('Unexpected operation status: ' + result.status)
