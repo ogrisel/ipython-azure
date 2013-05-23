@@ -15,6 +15,7 @@ from azure.servicemanagement import LinuxConfigurationSet
 from azure.servicemanagement import ConfigurationSet
 from azure.servicemanagement import ConfigurationSetInputEndpoint
 from azure.storage import BlobService
+from azure.servicemanagement import _XmlSerializer, _lower
 
 DEFAULT_PORTS = (
     ('ssh', 'tcp', '22', '22'),
@@ -24,6 +25,44 @@ FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
 
 log = logging.getLogger()
+
+
+#
+# Install monkeypatch to workaround bug:
+# https://github.com/WindowsAzure/azure-sdk-for-python/pull/83
+#
+
+@staticmethod
+def network_configuration_to_xml(configuration):
+    xml = _XmlSerializer.data_to_xml([('ConfigurationSetType', configuration.configuration_set_type)])
+    xml += '<InputEndpoints>'
+    for endpoint in configuration.input_endpoints:
+        xml += '<InputEndpoint>'
+        xml += _XmlSerializer.data_to_xml([('LoadBalancedEndpointSetName', endpoint.load_balanced_endpoint_set_name),
+                                           ('LocalPort', endpoint.local_port),
+                                           ('Name', endpoint.name),
+                                           ('Port', endpoint.port)])
+
+        if endpoint.load_balancer_probe.path or endpoint.load_balancer_probe.port or endpoint.load_balancer_probe.protocol:
+            xml += '<LoadBalancerProbe>'
+            xml += _XmlSerializer.data_to_xml([('Path', endpoint.load_balancer_probe.path),
+                                               ('Port', endpoint.load_balancer_probe.port),
+                                               ('Protocol', endpoint.load_balancer_probe.protocol)])
+            xml += '</LoadBalancerProbe>'
+
+        xml += _XmlSerializer.data_to_xml([
+            ('Protocol', endpoint.protocol),
+            ('EnableDirectServerReturn', endpoint.enable_direct_server_return, _lower),
+        ])
+        xml += '</InputEndpoint>'
+    xml += '</InputEndpoints>'
+    xml += '<SubnetNames>'
+    for name in configuration.subnet_names:
+        xml += _XmlSerializer.data_to_xml([('SubnetName', name)])
+    xml += '</SubnetNames>'
+    return xml
+
+_XmlSerializer.network_configuration_to_xml = network_configuration_to_xml
 
 
 class Provisioner(object):
