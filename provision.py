@@ -34,25 +34,33 @@ log = logging.getLogger()
 
 @staticmethod
 def network_configuration_to_xml(configuration):
-    xml = _XmlSerializer.data_to_xml([('ConfigurationSetType', configuration.configuration_set_type)])
+    xml = _XmlSerializer.data_to_xml([(
+        'ConfigurationSetType', configuration.configuration_set_type)])
     xml += '<InputEndpoints>'
     for endpoint in configuration.input_endpoints:
         xml += '<InputEndpoint>'
-        xml += _XmlSerializer.data_to_xml([('LoadBalancedEndpointSetName', endpoint.load_balanced_endpoint_set_name),
-                                           ('LocalPort', endpoint.local_port),
-                                           ('Name', endpoint.name),
-                                           ('Port', endpoint.port)])
+        xml += _XmlSerializer.data_to_xml(
+            [('LoadBalancedEndpointSetName',
+              endpoint.load_balanced_endpoint_set_name),
+             ('LocalPort', endpoint.local_port),
+             ('Name', endpoint.name),
+             ('Port', endpoint.port)])
 
-        if endpoint.load_balancer_probe.path or endpoint.load_balancer_probe.port or endpoint.load_balancer_probe.protocol:
+        if (endpoint.load_balancer_probe.path
+            or endpoint.load_balancer_probe.port
+            or endpoint.load_balancer_probe.protocol):
             xml += '<LoadBalancerProbe>'
-            xml += _XmlSerializer.data_to_xml([('Path', endpoint.load_balancer_probe.path),
-                                               ('Port', endpoint.load_balancer_probe.port),
-                                               ('Protocol', endpoint.load_balancer_probe.protocol)])
+            xml += _XmlSerializer.data_to_xml(
+                [('Path', endpoint.load_balancer_probe.path),
+                 ('Port',
+                  endpoint.load_balancer_probe.port),
+                 ('Protocol', endpoint.load_balancer_probe.protocol)])
             xml += '</LoadBalancerProbe>'
 
         xml += _XmlSerializer.data_to_xml([
             ('Protocol', endpoint.protocol),
-            ('EnableDirectServerReturn', endpoint.enable_direct_server_return, _lower),
+            ('EnableDirectServerReturn',
+             endpoint.enable_direct_server_return, _lower),
         ])
         xml += '</InputEndpoint>'
     xml += '</InputEndpoints>'
@@ -66,6 +74,7 @@ _XmlSerializer.network_configuration_to_xml = network_configuration_to_xml
 
 
 class Provisioner(object):
+
     """Controller class to provision an IPython cluster."""
 
     def __init__(self, service_name=None, storage_account_name=None,
@@ -93,7 +102,7 @@ class Provisioner(object):
 
         self.location = location
         self.image_name = image_name
-        
+
         if subscription_id is None:
             subscription_id = os.environ['AZURE_SUBSCRIPTION_ID']
         self.subscription_id = subscription_id
@@ -127,9 +136,10 @@ class Provisioner(object):
         if self.affinity_group not in group_names:
             try:
                 log.info("Creating new affinity_group: '%s'",
-                    self.affinity_group)
+                         self.affinity_group)
                 self.sms.create_affinity_group(self.affinity_group,
-                    service_label, self.location, description)
+                                               service_label, self.location,
+                                               description)
             except WindowsAzureConflictError:
                 raise RuntimeError(
                     "Affinity Group '%s' has already been provisioned" %
@@ -142,9 +152,10 @@ class Provisioner(object):
                          for s in self.sms.list_hosted_services()]
         if self.service_name not in service_names:
             try:
-                log.info("Creating new hosted service: '%s'", self.service_name)
-                self.sms.create_hosted_service(self.service_name,
-                    service_label, description,
+                log.info(
+                    "Creating new hosted service: '%s'", self.service_name)
+                self.sms.create_hosted_service(
+                    self.service_name, service_label, description,
                     affinity_group=self.affinity_group)
             except WindowsAzureConflictError:
                 raise RuntimeError(
@@ -166,8 +177,9 @@ class Provisioner(object):
             try:
                 log.info("Creating new storage account: '%s'",
                          self.storage_account_name)
-                self.sms.create_storage_account(self.storage_account_name,
-                    "Blob store for " + self.service_name, service_label,
+                self.sms.create_storage_account(
+                    self.storage_account_name, "Blob store for " +
+                    self.service_name, service_label,
                     affinity_group=self.affinity_group)
             except WindowsAzureConflictError:
                 raise RuntimeError(
@@ -175,7 +187,7 @@ class Provisioner(object):
                     " by another user." % self.storage_account_name)
 
         log.info("Fetching keys for storage account: '%s'",
-            self.storage_account_name)
+                 self.storage_account_name)
         n_tries = 3
         sleep_duration = 10
         keys = None
@@ -186,11 +198,12 @@ class Provisioner(object):
                 break
             except WindowsAzureMissingResourceError:
                 log.info("Not found, retrying (%d/%d) in %ds...", i + 1,
-                    n_tries, sleep_duration)
+                         n_tries, sleep_duration)
                 time.sleep(sleep_duration)
         if keys is None:
             raise RuntimeError("Failed to fetch keys for storage account '%s'"
-                % self.storage_account_name)
+
+                               % self.storage_account_name)
 
         blob_service = BlobService(
             account_name=self.storage_account_name,
@@ -200,7 +213,7 @@ class Provisioner(object):
             self.storage_account_name, target_blob_name)
 
         linux_config = LinuxConfigurationSet('hostname', 'username',
-            self.password, True)
+                                             self.password, True)
 
         network_config = ConfigurationSet()
         network_config.configuration_set_type = 'NetworkConfiguration'
