@@ -15,6 +15,8 @@ from azure.servicemanagement import LinuxConfigurationSet
 from azure.servicemanagement import ConfigurationSet
 from azure.servicemanagement import ConfigurationSetInputEndpoint
 from azure.storage import BlobService
+from azure.servicemanagement import PublicKey
+from azure.servicemanagement import KeyPair
 from azure.servicemanagement import _XmlSerializer, _lower
 
 DEFAULT_PORTS = (
@@ -73,6 +75,40 @@ def network_configuration_to_xml(configuration):
 _XmlSerializer.network_configuration_to_xml = network_configuration_to_xml
 
 
+@staticmethod
+def linux_configuration_to_xml(configuration):
+    xml = _XmlSerializer.data_to_xml([
+        ('ConfigurationSetType', configuration.configuration_set_type),
+        ('HostName', configuration.host_name),
+        ('UserName', configuration.user_name),
+        ('UserPassword', configuration.user_password),
+        ('DisableSshPasswordAuthentication',
+         configuration.disable_ssh_password_authentication, _lower)])
+
+    if configuration.ssh is not None:
+        xml += '<SSH>'
+        xml += '<PublicKeys>'
+        for key in configuration.ssh.public_keys:
+            xml += '<PublicKey>'
+            xml += _XmlSerializer.data_to_xml([
+                ('Fingerprint', key.finger_print),
+                ('Path', key.path)])
+            xml += '</PublicKey>'
+        xml += '</PublicKeys>'
+        xml += '<KeyPairs>'
+        for key in configuration.ssh.key_pairs:
+            xml += '<KeyPair>'
+            xml += _XmlSerializer.data_to_xml([
+                ('Fingerprint', key.finger_print),
+                ('Path', key.path)])
+            xml += '</KeyPair>'
+        xml += '</KeyPairs>'
+        xml += '</SSH>'
+    return xml
+
+_XmlSerializer.linux_configuration_to_xml = linux_configuration_to_xml
+
+
 class Provisioner(object):
 
     """Controller class to provision an IPython cluster."""
@@ -81,7 +117,7 @@ class Provisioner(object):
                  affinity_group=None, username=None,
                  location='West US', subscription_id=None,
                  certificate_path='~/azure.pem', image_name=None,
-                 password=None):
+                 password=None, finger_print=None):
         if username is None:
             username = os.getlogin()
         self.username = username
@@ -116,6 +152,8 @@ class Provisioner(object):
             password = ''.join(random.sample(symbols, 10))
             password += ''.join(random.sample('-_+=,./#$', 2))
         self.password = password
+
+        self.finger_print = finger_print
 
         self.sms = ServiceManagementService(subscription_id, certificate_path)
         self.provisioning_requests = []
@@ -188,8 +226,8 @@ class Provisioner(object):
 
         log.info("Fetching keys for storage account: '%s'",
                  self.storage_account_name)
-        n_tries = 3
-        sleep_duration = 10
+        n_tries = 5
+        sleep_duration = 30
         keys = None
         for i in range(n_tries):
             try:
@@ -202,7 +240,6 @@ class Provisioner(object):
                 time.sleep(sleep_duration)
         if keys is None:
             raise RuntimeError("Failed to fetch keys for storage account '%s'"
-
                                % self.storage_account_name)
 
         blob_service = BlobService(
@@ -212,8 +249,19 @@ class Provisioner(object):
         os_image_url = "http://{}.blob.core.windows.net/vhds/{}".format(
             self.storage_account_name, target_blob_name)
 
-        linux_config = LinuxConfigurationSet('hostname', 'username',
-                                             self.password, True)
+        use_ssh_key = self.finger_print is not None
+        linux_config = LinuxConfigurationSet('hostname', self.username,
+                                             self.password, use_ssh_key)
+        if self.finger_print is not None:
+            pk = PublicKey()
+            pk.path = '/home/{}/.ssh/authorized_keys'.format(self.username)
+            pk.finger_print = self.finger_print
+            linux_config.ssh.public_keys.public_keys.append(pk)
+
+            kp = KeyPair()
+            kp.path = '/home/{}/.ssh/id_rsa'.format(self.username)
+            kp.finger_print = self.finger_print
+            linux_config.ssh.key_pairs.key_pairs.append(kp)
 
         network_config = ConfigurationSet()
         network_config.configuration_set_type = 'NetworkConfiguration'
@@ -260,4 +308,8 @@ class Provisioner(object):
             time.sleep(5)
             result = self.sms.get_operation_status(request_id)
         if result.status not in expected:
-            raise RuntimeError('Unexpected operation status: ' + result.status)
+            msg = 'Unexpected operation status: ' + result.status
+            if getattr(result, 'error', None) is not None:
+                msg += ', code: {}, message: {}'.format(
+                    result.error.code, result.error.message)
+            raise RuntimeError(msg)
