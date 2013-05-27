@@ -7,6 +7,8 @@ import logging
 import time
 import string
 
+from paramiko import RSAKey
+
 from azure import WindowsAzureConflictError
 from azure import WindowsAzureMissingResourceError
 from azure.servicemanagement import ServiceManagementService
@@ -75,6 +77,10 @@ def network_configuration_to_xml(configuration):
 _XmlSerializer.network_configuration_to_xml = network_configuration_to_xml
 
 
+#
+# Install a monkeypatch for the s/FingerPrint/Fingerprint/g typo
+#
+
 @staticmethod
 def linux_configuration_to_xml(configuration):
     xml = _XmlSerializer.data_to_xml([
@@ -110,20 +116,21 @@ _XmlSerializer.linux_configuration_to_xml = linux_configuration_to_xml
 
 
 class Provisioner(object):
-
     """Controller class to provision an IPython cluster."""
 
     def __init__(self, service_name=None, storage_account_name=None,
                  affinity_group=None, username=None,
                  location='West US', subscription_id=None,
                  certificate_path='~/azure.pem', image_name=None,
-                 password=None, finger_print=None):
+                 password=None, finger_print=None,
+                 keys_folder='~/.ipazure/keys'):
         if username is None:
             username = os.getlogin()
         self.username = username
         if service_name is None:
             service_name = username + '-ipython'
         self.service_name = service_name
+        self.hostname = "{}.cloudapp.net".format(self.service_name)
 
         if affinity_group is None:
             self.affinity_group = service_name
@@ -154,6 +161,7 @@ class Provisioner(object):
         self.password = password
 
         self.finger_print = finger_print
+        self.keys_folder = os.path.expanduser(keys_folder)
 
         self.sms = ServiceManagementService(subscription_id, certificate_path)
         self.provisioning_requests = []
@@ -296,13 +304,37 @@ class Provisioner(object):
             raise RuntimeError("Service '%s' has already been deployed" %
                                self.service_name)
         if not async:
-            self._wait_for_async(request.request_id)
+            self._wait_for_async(request.request_id,
+                                 self.deploy_ip_master_node)
 
-    def destroy_node(self):
+    def destroy_node(self, destroy_vm=True, destroy_disk=True,
+                     destroy_storage_account=True):
         """Destroy any running instance and related provisioned resources"""
         pass
 
-    def _wait_for_async(self, request_id, expected=('Succeeded',)):
+    def deploy_ip_master_node(self):
+        """Use ssh to install the IPCluster master node"""
+        pubkey_filename, privkey_filename = self.get_ssh_keyfiles()
+
+    def get_ssh_keyfiles(self):
+        """Generate a dedicated keypair for service or reuse previous"""
+        if not os.path.exists(self.keys_folder):
+            os.makedirs(self.keys_folder)
+
+        privkey_filename = os.path.join(self.keys_folder,
+                                        self.service_name + '_rsa')
+        pubkey_filename = privkey_filename + '.pub'
+        if (not os.path.exists(privkey_filename)
+            or not os.path.exists(pubkey_filename)):
+            # Generate a passwordless keypair
+            k = RSAKey.generate(2048)
+            k.write_private_key_file(privkey_filename)
+            with open(pubkey_filename, 'wb') as f:
+                f.write("{} {}".format(k.get_name(), k.get_base64()))
+        return pubkey_filename, privkey_filename
+
+    def _wait_for_async(self, request_id, expected=('Succeeded',),
+                        success_callback=None):
         result = self.sms.get_operation_status(request_id)
         while result.status == 'InProgress':
             time.sleep(5)
@@ -313,3 +345,5 @@ class Provisioner(object):
                 msg += ', code: {}, message: {}'.format(
                     result.error.code, result.error.message)
             raise RuntimeError(msg)
+        if success_callback is not None:
+            success_callback()
