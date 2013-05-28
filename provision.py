@@ -196,7 +196,7 @@ class Provisioner(object):
 
         log.info("Fetching keys for storage account: '%s'",
                  self.storage_account_name)
-        n_tries = 5
+        n_tries = 10
         sleep_duration = 30
         keys = None
         for i in range(n_tries):
@@ -309,8 +309,7 @@ class Provisioner(object):
         for i in range(n_tries):
             try:
                 c.connect(self.hostname, username=self.username,
-                          password=self.password,
-                          pkey=RSAKey(filename=private_key))
+                          password=self.password, key_filename=private_key)
                 return c
             except socket.error as e:
                 log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
