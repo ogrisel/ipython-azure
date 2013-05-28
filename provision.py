@@ -6,10 +6,11 @@ import os
 import logging
 import time
 import string
+import socket
 
 from paramiko import RSAKey
 from paramiko import SSHClient
-from paramiko import MissingHostKeyPolicy
+from paramiko import AutoAddPolicy
 
 from azure import WindowsAzureConflictError
 from azure import WindowsAzureMissingResourceError
@@ -29,20 +30,6 @@ FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
 
 log = logging.getLogger()
-
-
-class IgnoreMissingHostKeyPolicy(MissingHostKeyPolicy):
-    """Ignore missing host key.
-
-    As different transient nodes will likely be provisioned under the same
-    public hostname there is no point in expecting any previous host key to
-    be up to date (unless we do all the tedious bookeeping).
-
-    TODO: do the tedious host key book keeping instead.
-    """
-
-    def missing_host_key(self, client, hostname, key):
-        pass
 
 
 #
@@ -217,7 +204,7 @@ class Provisioner(object):
                 keys = self.sms.get_storage_account_keys(
                     self.storage_account_name)
                 break
-            except WindowsAzureMissingResourceError:
+            except WindowsAzureMissingResourceError, socket.gaierror:
                 log.info("Not found, retrying (%d/%d) in %ds...", i + 1,
                          n_tries, sleep_duration)
                 time.sleep(sleep_duration)
@@ -278,6 +265,8 @@ class Provisioner(object):
 
     def deploy_ip_master_node(self):
         """Use ssh to install the IPCluster master node"""
+        log.info("Configuring provisioned host '%s'", self.hostname)
+        client = self.make_ssh_client(n_tries=5)
         pubkey_filename, privkey_filename = self.get_ssh_keyfiles()
 
     def get_ssh_keyfiles(self):
@@ -312,15 +301,19 @@ class Provisioner(object):
         if success_callback is not None:
             success_callback()
 
-    def make_ssh_client(self, password=None):
+    def make_ssh_client(self, n_tries=1, sleep_duration=30):
         c = SSHClient()
-        c.set_missing_host_key_policy(IgnoreMissingHostKeyPolicy())
-        if password is not None:
-            # Use the provided password
-            c.connect(self.hostname, password=password)
-        else:
-            # Expect the public key for this host to have already been deployed
-            # in the authorized_keys folder of the target host
-            _, private_key = self.get_ssh_keyfiles()
-            c.connect(self.hostname, pkey=RSAKey(filename=private_key))
-        return c
+        c.load_system_host_keys()
+        c.set_missing_host_key_policy(AutoAddPolicy())
+        _, private_key = self.get_ssh_keyfiles()
+        for i in range(n_tries):
+            try:
+                c.connect(self.hostname, username=self.username,
+                          password=self.password,
+                          pkey=RSAKey(filename=private_key))
+                return c
+            except socket.error as e:
+                log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
+                         self.hostname, i + 1, n_tries, sleep_duration)
+                time.sleep(sleep_duration)
+        raise e
