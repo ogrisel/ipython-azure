@@ -17,8 +17,6 @@ from azure.servicemanagement import LinuxConfigurationSet
 from azure.servicemanagement import ConfigurationSet
 from azure.servicemanagement import ConfigurationSetInputEndpoint
 from azure.storage import BlobService
-from azure.servicemanagement import PublicKey
-from azure.servicemanagement import KeyPair
 from azure.servicemanagement import _XmlSerializer, _lower
 
 DEFAULT_PORTS = (
@@ -77,44 +75,6 @@ def network_configuration_to_xml(configuration):
 _XmlSerializer.network_configuration_to_xml = network_configuration_to_xml
 
 
-#
-# Install a monkeypatch for the s/FingerPrint/Fingerprint/g typo
-#
-
-@staticmethod
-def linux_configuration_to_xml(configuration):
-    xml = _XmlSerializer.data_to_xml([
-        ('ConfigurationSetType', configuration.configuration_set_type),
-        ('HostName', configuration.host_name),
-        ('UserName', configuration.user_name),
-        ('UserPassword', configuration.user_password),
-        ('DisableSshPasswordAuthentication',
-         configuration.disable_ssh_password_authentication, _lower)])
-
-    if configuration.ssh is not None:
-        xml += '<SSH>'
-        xml += '<PublicKeys>'
-        for key in configuration.ssh.public_keys:
-            xml += '<PublicKey>'
-            xml += _XmlSerializer.data_to_xml([
-                ('Fingerprint', key.finger_print),
-                ('Path', key.path)])
-            xml += '</PublicKey>'
-        xml += '</PublicKeys>'
-        xml += '<KeyPairs>'
-        for key in configuration.ssh.key_pairs:
-            xml += '<KeyPair>'
-            xml += _XmlSerializer.data_to_xml([
-                ('Fingerprint', key.finger_print),
-                ('Path', key.path)])
-            xml += '</KeyPair>'
-        xml += '</KeyPairs>'
-        xml += '</SSH>'
-    return xml
-
-_XmlSerializer.linux_configuration_to_xml = linux_configuration_to_xml
-
-
 class Provisioner(object):
     """Controller class to provision an IPython cluster."""
 
@@ -160,7 +120,6 @@ class Provisioner(object):
             password += ''.join(random.sample('-_+=,./#$', 2))
         self.password = password
 
-        self.finger_print = finger_print
         self.keys_folder = os.path.expanduser(keys_folder)
 
         self.sms = ServiceManagementService(subscription_id, certificate_path)
@@ -257,19 +216,8 @@ class Provisioner(object):
         os_image_url = "http://{}.blob.core.windows.net/vhds/{}".format(
             self.storage_account_name, target_blob_name)
 
-        use_ssh_key = self.finger_print is not None
         linux_config = LinuxConfigurationSet('hostname', self.username,
-                                             self.password, use_ssh_key)
-        if self.finger_print is not None:
-            pk = PublicKey()
-            pk.path = '/home/{}/.ssh/authorized_keys'.format(self.username)
-            pk.finger_print = self.finger_print
-            linux_config.ssh.public_keys.public_keys.append(pk)
-
-            kp = KeyPair()
-            kp.path = '/home/{}/.ssh/id_rsa'.format(self.username)
-            kp.finger_print = self.finger_print
-            linux_config.ssh.key_pairs.key_pairs.append(kp)
+                                             self.password, False)
 
         network_config = ConfigurationSet()
         network_config.configuration_set_type = 'NetworkConfiguration'
