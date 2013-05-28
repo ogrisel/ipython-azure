@@ -8,6 +8,8 @@ import time
 import string
 
 from paramiko import RSAKey
+from paramiko import SSHClient
+from paramiko import MissingHostKeyPolicy
 
 from azure import WindowsAzureConflictError
 from azure import WindowsAzureMissingResourceError
@@ -27,6 +29,20 @@ FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
 
 log = logging.getLogger()
+
+
+class IgnoreMissingHostKeyPolicy(MissingHostKeyPolicy):
+    """Ignore missing host key.
+
+    As different transient nodes will likely be provisioned under the same
+    public hostname there is no point in expecting any previous host key to
+    be up to date (unless we do all the tedious bookeeping).
+
+    TODO: do the tedious host key book keeping instead.
+    """
+
+    def missing_host_key(self, client, hostname, key):
+        pass
 
 
 #
@@ -295,3 +311,16 @@ class Provisioner(object):
             raise RuntimeError(msg)
         if success_callback is not None:
             success_callback()
+
+    def make_ssh_client(self, password=None):
+        c = SSHClient()
+        c.set_missing_host_key_policy(IgnoreMissingHostKeyPolicy())
+        if password is not None:
+            # Use the provided password
+            c.connect(self.hostname, password=password)
+        else:
+            # Expect the public key for this host to have already been deployed
+            # in the authorized_keys folder of the target host
+            _, private_key = self.get_ssh_keyfiles()
+            c.connect(self.hostname, pkey=RSAKey(filename=private_key))
+        return c
