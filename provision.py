@@ -269,7 +269,7 @@ class Provisioner(object):
                                self.service_name)
         if not async:
             self._wait_for_async(request.request_id,
-                                 self.deploy_ip_master_node)
+                                 success_callback=self.deploy_ip_master_node)
 
     def destroy_node(self, destroy_vm=True, destroy_disk=True,
                      destroy_storage_account=True):
@@ -297,8 +297,8 @@ class Provisioner(object):
                 f.write("{} {}".format(k.get_name(), k.get_base64()))
         return pubkey_filename, privkey_filename
 
-    def _wait_for_async(self, request_id, expected=('Succeeded',),
-                        success_callback=None):
+    def _wait_for_async(self, request_id, success_callback=None,
+                        expected=('Succeeded',)):
         result = self.sms.get_operation_status(request_id)
         while result.status == 'InProgress':
             time.sleep(5)
