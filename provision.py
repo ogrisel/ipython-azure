@@ -266,7 +266,7 @@ class Provisioner(object):
     def deploy_ip_master_node(self):
         """Use ssh to install the IPCluster master node"""
         log.info("Configuring provisioned host '%s'", self.hostname)
-        client = self.make_ssh_client(n_tries=5)
+        client = self.make_ssh_client(n_tries=10)
         pubkey_filename, privkey_filename = self.get_ssh_keyfiles()
 
     def get_ssh_keyfiles(self):
