@@ -10,6 +10,7 @@ import socket
 
 from paramiko import RSAKey
 from paramiko import SSHClient
+from paramiko import SFTPClient
 from paramiko import AutoAddPolicy
 
 from azure import WindowsAzureConflictError
@@ -261,13 +262,15 @@ class Provisioner(object):
     def destroy_node(self, destroy_vm=True, destroy_disk=True,
                      destroy_storage_account=True):
         """Destroy any running instance and related provisioned resources"""
+        # TODO
         pass
 
     def deploy_ip_master_node(self):
         """Use ssh to install the IPCluster master node"""
         log.info("Configuring provisioned host '%s'", self.hostname)
         client = self.make_ssh_client(n_tries=10)
-        pubkey_filename, privkey_filename = self.get_ssh_keyfiles()
+        self._install_ssh_keys(client)
+        self._setup_sudo_nopasswd(client)
 
     def get_ssh_keyfiles(self):
         """Generate a dedicated keypair for service or reuse previous"""
@@ -316,3 +319,30 @@ class Provisioner(object):
                          self.hostname, i + 1, n_tries, sleep_duration)
                 time.sleep(sleep_duration)
         raise e
+
+    def _setup_sudo_nopasswd(self, client):
+        """Remove the password requirements for sudoing
+
+        For long running clusters, we don't store the password locally, hence
+        we might want to trust the ssh auth for sudo operations.
+
+        """
+        # TODO
+
+    def _install_ssh_keys(self, client):
+        """Install ssh keys on a newly provisioned node"""
+        log.info("Installing ssh keys on %s", self.service_name)
+
+        sftp = SFTPClient.from_transport(client.get_transport())
+        pubkey, privkey = self.get_ssh_keyfiles()
+        ssh_folder = "/home/{}/.ssh".format(self.username)
+        sftp.mkdir(ssh_folder)
+        sftp.put(pubkey, ssh_folder + '/id_rsa.pub')
+        sftp.put(privkey, ssh_folder + '/id_rsa')
+        with sftp.open(ssh_folder + '/authorized_keys', 'w') as f:
+            f.write(open(pubkey, 'rb').read())
+            f.write('\n')
+            id_rsa_pub = os.path.expanduser('~/.ssh/id_rsa.pub')
+            if os.path.exists('id_rsa_pub'):
+                f.write(open(id_rsa_pub, 'rb').read())
+                f.write('\n')
