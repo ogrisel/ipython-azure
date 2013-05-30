@@ -7,6 +7,7 @@ import logging
 import time
 import string
 import socket
+from contextlib import closing
 
 from paramiko import RSAKey
 from paramiko import SSHClient
@@ -23,9 +24,30 @@ from azure.servicemanagement import ConfigurationSetInputEndpoint
 from azure.storage import BlobService
 from azure.servicemanagement import _XmlSerializer, _lower
 
+
 DEFAULT_PORTS = (
     ('ssh', 'tcp', '22', '22'),
 )
+
+NOPASSWD_SCRIPT = """\
+#!/usr/bin/env python
+
+import os
+with open('/etc/sudoers', 'rb') as f:
+    sudoers = f.read()
+
+with_passwd = "ALL=(ALL) ALL"
+without_passwd = "ALL=(ALL) NOPASSWD: ALL"
+
+if with_passwd in sudoers:
+    new_sudoers = sudoers.replace(with_passwd, without_passwd)
+    with open('/etc/sudoers', 'w+') as f:
+        f.write(new_sudoers)
+    print('updated')
+else:
+    print('unchanged')
+"""
+
 
 FORMAT = '%(levelname)-8s %(asctime)-15s %(message)s'
 logging.basicConfig(level=logging.INFO, format=FORMAT)
@@ -197,7 +219,7 @@ class Provisioner(object):
 
         log.info("Fetching keys for storage account: '%s'",
                  self.storage_account_name)
-        n_tries = 10
+        n_tries = 50
         sleep_duration = 30
         keys = None
         for i in range(n_tries):
@@ -268,9 +290,14 @@ class Provisioner(object):
     def deploy_ip_master_node(self):
         """Use ssh to install the IPCluster master node"""
         log.info("Configuring provisioned host '%s'", self.hostname)
-        client = self.make_ssh_client(n_tries=10)
-        self._install_ssh_keys(client)
-        self._setup_sudo_nopasswd(client)
+        ssh = self.make_ssh_client(n_tries=10)
+        sftp = ssh.open_sftp()
+        try:
+            self._install_ssh_keys(sftp)
+            self._setup_sudo_nopasswd(ssh, sftp)
+        finally:
+            sftp.close()
+            ssh.close()
 
     def get_ssh_keyfiles(self):
         """Generate a dedicated keypair for service or reuse previous"""
@@ -320,23 +347,46 @@ class Provisioner(object):
                 time.sleep(sleep_duration)
         raise e
 
-    def _setup_sudo_nopasswd(self, client):
+    def _setup_sudo_nopasswd(self, ssh, sftp, bufsize=-1):
         """Remove the password requirements for sudoing
 
         For long running clusters, we don't store the password locally, hence
         we might want to trust the ssh auth for sudo operations.
 
         """
-        # TODO
+        log.info("Disabling password check for sudo")
+        script_file = "/home/{}/nopasswd.py".format(self.username)
+        with sftp.open(script_file, 'w+') as f:
+            f.write(NOPASSWD_SCRIPT)
+        cmd = "sudo python " + script_file
 
-    def _install_ssh_keys(self, client):
+        # Launch the sudo command with a Pseudo TTY to be able to pass
+        # the password to the sudo command
+        with closing(ssh.get_transport().open_session()) as chan:
+            chan.get_pty()
+            chan.exec_command(cmd)
+            stdin = chan.makefile('wb', bufsize)
+            stdout = chan.makefile('rb', bufsize)
+            stderr = chan.makefile_stderr('rb', bufsize)
+            stdin.write(self.password)
+            stdin.write('\n')
+            stdin.flush()
+            out_lines = stdout.read().strip().split('\n')
+            err_lines = stderr.read().strip().split('\n')
+            log.info("Executing '%s': out=%s, err=%s",
+                     cmd, out_lines[-1], err_lines[-1])
+
+    def _install_ssh_keys(self, sftp):
         """Install ssh keys on a newly provisioned node"""
         log.info("Installing ssh keys on %s", self.service_name)
 
-        sftp = SFTPClient.from_transport(client.get_transport())
         pubkey, privkey = self.get_ssh_keyfiles()
         ssh_folder = "/home/{}/.ssh".format(self.username)
-        sftp.mkdir(ssh_folder)
+        try:
+            sftp.mkdir(ssh_folder)
+        except IOError:
+            # folder already exists
+            pass
         sftp.put(pubkey, ssh_folder + '/id_rsa.pub')
         sftp.put(privkey, ssh_folder + '/id_rsa')
         with sftp.open(ssh_folder + '/authorized_keys', 'w') as f:
