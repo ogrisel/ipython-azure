@@ -28,6 +28,8 @@ from azure.servicemanagement import _XmlSerializer, _lower
 
 DEFAULT_PORTS = (
     ('ssh', 'tcp', '22', '22'),
+    ('salt-master-1', 'tcp', '4505', '4505'),
+    ('salt-master-2', 'tcp', '4506', '4506'),
 )
 
 NOPASSWD_SCRIPT = """\
@@ -245,7 +247,7 @@ class Provisioner(object):
         os_image_url = "http://{}.blob.core.windows.net/vhds/{}".format(
             self.storage_account_name, target_blob_name)
 
-        linux_config = LinuxConfigurationSet('hostname', self.username,
+        linux_config = LinuxConfigurationSet(self.service_name, self.username,
                                              self.password, False)
 
         network_config = ConfigurationSet()
@@ -405,6 +407,7 @@ class Provisioner(object):
     @staticmethod
     def _execute_in_pty(hostname, ssh, cmd, timeout=None, payload_stdin=None,
                         bufsize=-1):
+        log.info("Executing '%s' on '%s':", cmd, hostname)
         with closing(ssh.get_transport().open_session()) as chan:
             if timeout is not None:
                 chan.settimeout(timeout)
@@ -414,7 +417,7 @@ class Provisioner(object):
             stdout = chan.makefile('rb', bufsize)
             stderr = chan.makefile_stderr('rb', bufsize)
             try:
-                log.info("Executing '%s':", cmd)
+
                 if payload_stdin is not None:
                     stdin.write(payload_stdin)
                     stdin.flush()
@@ -444,5 +447,22 @@ class Provisioner(object):
 
     def _bootstrap_salt_master(self, ssh, sftp):
         log.info("Boostrapping salt master on '%s'", self.hostname)
-        cmd = "wget -q -O - http://bootstrap.saltstack.org | sudo sh"
+
+        # Add localhost as salt master in local dns
+        cmd = "sudo /bin/sh -c 'echo \"127.0.0.1 salt\" >> /etc/hosts'"
+        self._execute_in_pty(self.hostname, ssh, cmd, timeout=1)
+
+        # Install and run both master and local minion on host
+        cmd = "wget -q -O bootstrap-salt.sh http://bootstrap.saltstack.org"
         self._execute_in_pty(self.hostname, ssh, cmd, timeout=60)
+        cmd = "sudo sh bootstrap-salt.sh -M"
+        self._execute_in_pty(self.hostname, ssh, cmd, timeout=60)
+
+        # Accept the key from the local minion
+        cmd = "sudo salt-key -A"
+        self._execute_in_pty(self.hostname, ssh, cmd, timeout=5)
+
+        # Check that salt is running as expected and the local minion is
+        # connected
+        cmd = "sudo salt '*' cmd.run 'uname -a'"
+        self._execute_in_pty(self.hostname, ssh, cmd, timeout=10)
