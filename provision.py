@@ -34,15 +34,17 @@ NOPASSWD_SCRIPT = """\
 #!/usr/bin/env python
 
 import os
-with open('/etc/sudoers', 'rb') as f:
+
+sudoers_filename = '/etc/sudoers.d/waagent'
+with open(sudoers_filename, 'rb') as f:
     sudoers = f.read()
 
-with_passwd = "ALL=(ALL) ALL"
-without_passwd = "ALL=(ALL) NOPASSWD: ALL"
+with_passwd = "ALL = (ALL) ALL"
+without_passwd = "ALL = (ALL) NOPASSWD: ALL"
 
 if with_passwd in sudoers:
     new_sudoers = sudoers.replace(with_passwd, without_passwd)
-    with open('/etc/sudoers', 'w+') as f:
+    with open(sudoers_filename, 'w+') as f:
         f.write(new_sudoers)
     print('updated')
 else:
@@ -296,6 +298,7 @@ class Provisioner(object):
         try:
             self._install_ssh_keys(sftp)
             self._setup_sudo_nopasswd(ssh, sftp)
+            self._bootstrap_salt_master(ssh, sftp)
         finally:
             sftp.close()
             ssh.close()
@@ -378,41 +381,6 @@ class Provisioner(object):
                 time.sleep(sleep_duration)
         raise e
 
-    def _setup_sudo_nopasswd(self, ssh, sftp, bufsize=-1):
-        """Remove the password requirements for sudoing
-
-        For long running clusters, we don't store the password locally, hence
-        we might want to trust the ssh auth for sudo operations.
-
-        """
-        log.info("Disabling password check for sudo")
-        script_file = "/home/{}/nopasswd.py".format(self.username)
-        with sftp.open(script_file, 'w+') as f:
-            f.write(NOPASSWD_SCRIPT)
-        cmd = "sudo python " + script_file
-
-        # Launch the sudo command with a Pseudo TTY to be able to pass
-        # the password to the sudo command
-        with closing(ssh.get_transport().open_session()) as chan:
-            chan.settimeout(5)
-            chan.get_pty()
-            chan.exec_command(cmd)
-            stdin = chan.makefile('wb', bufsize)
-            stdout = chan.makefile('rb', bufsize)
-            stderr = chan.makefile_stderr('rb', bufsize)
-            try:
-                stdin.write(self.password)
-                stdin.write('\n')
-                stdin.flush()
-                out_lines = stdout.read().strip().split('\n')
-                err_lines = stderr.read().strip().split('\n')
-                log.info("Executing '%s': out=%s, err=%s",
-                         cmd, out_lines[-1], err_lines[-1])
-            except socket.timeout:
-                raise RuntimeError(
-                    "Failed to disable the password"
-                    " for sudo on host: %s" % self.hostname)
-
     def _install_ssh_keys(self, sftp):
         """Install ssh keys on a newly provisioned node"""
         log.info("Installing ssh keys on %s", self.service_name)
@@ -433,3 +401,48 @@ class Provisioner(object):
             if os.path.exists('id_rsa_pub'):
                 f.write(open(id_rsa_pub, 'rb').read())
                 f.write('\n')
+
+    @staticmethod
+    def _execute_in_pty(hostname, ssh, cmd, timeout=None, payload_stdin=None,
+                        bufsize=-1):
+        with closing(ssh.get_transport().open_session()) as chan:
+            if timeout is not None:
+                chan.settimeout(timeout)
+            chan.get_pty()
+            chan.exec_command(cmd)
+            stdin = chan.makefile('wb', bufsize)
+            stdout = chan.makefile('rb', bufsize)
+            stderr = chan.makefile_stderr('rb', bufsize)
+            try:
+                log.info("Executing '%s':", cmd)
+                if payload_stdin is not None:
+                    stdin.write(payload_stdin)
+                    stdin.flush()
+                for line in stdout:
+                    log.info("%s> " + line.strip(), hostname)
+                for line in stderr:
+                    log.warning("%s> " + line.strip(), hostname)
+            except socket.timeout:
+                raise RuntimeError("Timeout while executing command: %s"
+                                   % cmd)
+
+    def _setup_sudo_nopasswd(self, ssh, sftp):
+        """Remove the password requirements for sudoing
+
+        For long running clusters, we don't store the password locally, hence
+        we might want to trust the ssh auth for sudo operations.
+
+        """
+        log.info("Disabling password check for sudo")
+        script_file = "/home/{}/nopasswd.py".format(self.username)
+        with sftp.open(script_file, 'w+') as f:
+            f.write(NOPASSWD_SCRIPT)
+        cmd = "sudo python " + script_file
+        # Any sudo command needs a pseudo TTY interface on recent linux boxes
+        self._execute_in_pty(self.hostname, ssh, cmd, timeout=5,
+                             payload_stdin=self.password + '\n')
+
+    def _bootstrap_salt_master(self, ssh, sftp):
+        log.info("Boostrapping salt master on '%s'", self.hostname)
+        cmd = "wget -q -O - http://bootstrap.saltstack.org | sudo sh"
+        self._execute_in_pty(self.hostname, ssh, cmd, timeout=60)
