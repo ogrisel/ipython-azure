@@ -13,6 +13,7 @@ from paramiko import RSAKey
 from paramiko import SSHClient
 from paramiko import SFTPClient
 from paramiko import AutoAddPolicy
+from paramiko import BadHostKeyException
 
 from azure import WindowsAzureConflictError
 from azure import WindowsAzureMissingResourceError
@@ -317,11 +318,21 @@ class Provisioner(object):
         return pubkey_filename, privkey_filename
 
     def _wait_for_async(self, request_id, success_callback=None,
-                        expected=('Succeeded',)):
-        result = self.sms.get_operation_status(request_id)
-        while result.status == 'InProgress':
-            time.sleep(5)
-            result = self.sms.get_operation_status(request_id)
+                        expected=('Succeeded',), n_tries=10,
+                        sleep_duration=30):
+        for i in range(n_tries):
+            try:
+                result = self.sms.get_operation_status(request_id)
+                if result.status != 'InProgress':
+                    break
+            except socket.error as e:
+                log.warn("Ingnored socket error: %s", e)
+
+            log.info("Waiting for request on host '%s',"
+                     " retrying (%d/%d) in %ds...",
+                     self.hostname, i + 1, n_tries, sleep_duration)
+            time.sleep(sleep_duration)
+
         if result.status not in expected:
             msg = 'Unexpected operation status: ' + result.status
             if getattr(result, 'error', None) is not None:
@@ -338,9 +349,29 @@ class Provisioner(object):
         _, private_key = self.get_ssh_keyfiles()
         for i in range(n_tries):
             try:
-                c.connect(self.hostname, username=self.username,
-                          password=self.password, key_filename=private_key)
-                return c
+                try:
+                    c.connect(self.hostname, username=self.username,
+                              password=self.password, key_filename=private_key)
+                    return c
+                except BadHostKeyException:
+                    log.warn("Host key has changed for host: '%s'",
+                             self.hostname)
+                    # Remove the offending key and retry once
+                    known_hosts_file = os.path.expanduser('~/.ssh/known_hosts')
+                    with open(known_hosts_file, 'rb') as f:
+                        known_hosts = f.readlines()
+                    known_hosts = [
+                        kh for kh in known_hosts
+                        if kh.split()[0].split(',')[0] != self.hostname
+                    ]
+                    with open(known_hosts_file, 'wb') as f:
+                        f.write("".join(known_hosts))
+                    c = SSHClient()
+                    c.load_system_host_keys()
+                    c.set_missing_host_key_policy(AutoAddPolicy())
+                    c.connect(self.hostname, username=self.username,
+                              password=self.password, key_filename=private_key)
+                    return c
             except socket.error as e:
                 log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
                          self.hostname, i + 1, n_tries, sleep_duration)
@@ -363,18 +394,24 @@ class Provisioner(object):
         # Launch the sudo command with a Pseudo TTY to be able to pass
         # the password to the sudo command
         with closing(ssh.get_transport().open_session()) as chan:
+            chan.settimeout(5)
             chan.get_pty()
             chan.exec_command(cmd)
             stdin = chan.makefile('wb', bufsize)
             stdout = chan.makefile('rb', bufsize)
             stderr = chan.makefile_stderr('rb', bufsize)
-            stdin.write(self.password)
-            stdin.write('\n')
-            stdin.flush()
-            out_lines = stdout.read().strip().split('\n')
-            err_lines = stderr.read().strip().split('\n')
-            log.info("Executing '%s': out=%s, err=%s",
-                     cmd, out_lines[-1], err_lines[-1])
+            try:
+                stdin.write(self.password)
+                stdin.write('\n')
+                stdin.flush()
+                out_lines = stdout.read().strip().split('\n')
+                err_lines = stderr.read().strip().split('\n')
+                log.info("Executing '%s': out=%s, err=%s",
+                         cmd, out_lines[-1], err_lines[-1])
+            except socket.timeout:
+                raise RuntimeError(
+                    "Failed to disable the password"
+                    " for sudo on host: %s" % self.hostname)
 
     def _install_ssh_keys(self, sftp):
         """Install ssh keys on a newly provisioned node"""
