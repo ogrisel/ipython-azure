@@ -10,6 +10,6 @@ python-matplotlib:
   pkg:
     - installed
 
-python-ipython:
+ipython:
   pkg:
     - installed
