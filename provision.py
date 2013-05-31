@@ -428,7 +428,7 @@ class Provisioner(object):
                                self.service_name)
         if not async:
             self._wait_for_async(request.request_id, self.service_name,
-                                 success_callback=self.deploy_ip_master_node)
+                                 success_callback=self.deploy_master_node)
 
     def destroy_node(self, destroy_vm=True, destroy_disk=True,
                      destroy_storage_account=True):
