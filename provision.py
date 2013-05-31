@@ -26,6 +26,9 @@ from azure.storage import BlobService
 from azure.servicemanagement import _XmlSerializer, _lower
 
 
+DEFAULT_SALT_PROFILE = os.path.join(os.path.dirname(__file__), 'salt-profile')
+
+
 DEFAULT_PORTS = (
     ('ssh', 'tcp', '22', '22'),
     ('salt-master-1', 'tcp', '4505', '4505'),
@@ -208,20 +211,41 @@ class NodeController(object):
         if master_ip_address is None:
             # This node is the master
             self.exec_command("sudo sh bootstrap-salt.sh -M", timeout=60)
-
             # Accept the key from the local minion
             self.exec_command("sudo salt-key -A", timeout=5)
-
             # Check that salt is running as expected and the local minion is
             # connected
             self.exec_command("sudo salt '*' cmd.run 'uname -a'", timeout=10)
-
         else:
             # Just bootstrap the minion daemon
             self.exec_command("sudo sh bootstrap-salt.sh", timeout=60)
 
-            # TODO: accept the minion key on the master or pre-provision the
-            # minion key instead
+    @staticmethod
+    def quote(path):
+        return "'{}'".format(path.replace("'", "\\'"))
+
+    def upload_folder(self, local_path, remote_path, delete=False):
+        quoted_remote_path = self.quote(remote_path)
+        if delete:
+            self.exec_command("sudo rm -rf " + quoted_remote_path)
+            self.exec_command("sudo mkdir -p " + quoted_remote_path)
+            # Make sure that the sftp user has write access
+            self.exec_command("sudo chown {} {}".format(
+                self.username, quoted_remote_path))
+        for child in os.listdir(local_path):
+            local_child_path = os.path.join(local_path, child)
+            remote_child_path = remote_path + '/' + child
+            if os.path.isdir(local_child_path):
+                try:
+                    self.sftp.mkdir(remote_child_path)
+                except IOError as e:
+                    if delete:
+                        raise e
+                    # Otherwise assume the folder already exists
+                # Recursive call
+                self.upload_folder(local_child_path, remote_child_path)
+            else:
+                self.sftp.put(local_child_path, remote_child_path)
 
     def connect(self):
         self.ssh = self._make_ssh_client(self.n_tries, self.sleep_duration)
@@ -434,7 +458,7 @@ class Provisioner(object):
                      destroy_storage_account=True):
         """Destroy any running instance and related provisioned resources"""
         # TODO
-        pass
+        raise NotImplementedError()
 
     def get_ssh_keyfiles(self):
         """Generate a dedicated keypair for service or reuse previous"""
@@ -466,13 +490,20 @@ class Provisioner(object):
 
         ctl = self.master_controller
         ctl.setup_sudo_nopasswd()
-        #ctl.upload_folder(salt_profile_folder, '/srv/salt')
+        for folder in ('salt', 'pillar'):
+            folder_path = os.path.join(DEFAULT_SALT_PROFILE, folder)
+            if os.path.exists(folder_path):
+                log.info("Uploading configuration from: %s", folder_path)
+                ctl.upload_folder(folder_path, '/srv/' + folder, delete=True)
         ctl.bootstrap_salt()
 
         # Keys are put the home folder after the salt config has been
         # generated to be able to benefit from a home folder shared via NFS
         # in the salt state configuration for instance.
         ctl.install_ssh_keys(*self.get_ssh_keyfiles())
+
+        # Install everything from the provided profile
+        self.exec_command("sudo salt '*' state.highstate", timeout=300)
 
     def _wait_for_async(self, request_id, service_name, success_callback=None,
                         expected=('Succeeded',), n_tries=10,
