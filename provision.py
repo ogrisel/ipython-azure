@@ -30,6 +30,8 @@ DEFAULT_SALT_PROFILE = os.path.join(os.path.dirname(__file__), 'salt-profile')
 
 
 DEFAULT_PORTS = (
+    ('http', 'tcp', '80', '80'),
+    ('https', 'tcp', '443', '443'),
     ('ssh', 'tcp', '22', '22'),
     ('salt-master-1', 'tcp', '4505', '4505'),
     ('salt-master-2', 'tcp', '4506', '4506'),
@@ -282,7 +284,8 @@ class Provisioner(object):
                  location='West US', subscription_id=None,
                  certificate_path='~/azure.pem', image_name=None,
                  password=None, finger_print=None,
-                 keys_folder='~/.ipazure/keys'):
+                 keys_folder='~/.ipazure/keys',
+                 salt_profile=DEFAULT_SALT_PROFILE):
         if username is None:
             username = os.getlogin()
         self.username = username
@@ -323,6 +326,7 @@ class Provisioner(object):
         self.sms = ServiceManagementService(subscription_id, certificate_path)
         self.provisioning_requests = []
         self.master_controller = None
+        self.salt_profile = salt_profile
 
     def launch_node(self, role_size='Small', ports_config=DEFAULT_PORTS,
                     async=False):
@@ -490,8 +494,8 @@ class Provisioner(object):
 
         ctl = self.master_controller
         ctl.setup_sudo_nopasswd()
-        for folder in ('salt', 'pillar'):
-            folder_path = os.path.join(DEFAULT_SALT_PROFILE, folder)
+        for folder in os.listdir(self.salt_profile):
+            folder_path = os.path.join(self.salt_profile, folder)
             if os.path.exists(folder_path):
                 log.info("Uploading configuration from: %s", folder_path)
                 ctl.upload_folder(folder_path, '/srv/' + folder, delete=True)
@@ -503,7 +507,7 @@ class Provisioner(object):
         ctl.install_ssh_keys(*self.get_ssh_keyfiles())
 
         # Install everything from the provided profile
-        self.exec_command("sudo salt '*' state.highstate", timeout=300)
+        ctl.exec_command("sudo salt '*' state.highstate", timeout=300)
 
     def _wait_for_async(self, request_id, service_name, success_callback=None,
                         expected=('Succeeded',), n_tries=10,
