@@ -106,6 +106,150 @@ def network_configuration_to_xml(configuration):
 _XmlSerializer.network_configuration_to_xml = network_configuration_to_xml
 
 
+class NodeController(object):
+    """Class to remotely control a VM instance with ssh"""
+
+    def __init__(self, hostname, username, password=None,
+                 key_filename=None, n_tries=1, sleep_duration=30):
+        self.hostname = hostname
+        self.username = username
+        self.password = password
+        self.key_filename = key_filename
+
+        self.n_tries = n_tries
+        self.sleep_duration = sleep_duration
+        self.connect()
+
+    def exec_command(self, cmd, use_pty=True, timeout=None,
+                     payload_stdin=None, bufsize=-1):
+        log.info("Executing '%s' on '%s':", cmd, self.hostname)
+        with closing(self.ssh.get_transport().open_session()) as chan:
+            if timeout is not None:
+                chan.settimeout(timeout)
+            if use_pty:
+                chan.get_pty()
+            chan.exec_command(cmd)
+            stdin = chan.makefile('wb', bufsize)
+            stdout = chan.makefile('rb', bufsize)
+            stderr = chan.makefile_stderr('rb', bufsize)
+            try:
+
+                if payload_stdin is not None:
+                    stdin.write(payload_stdin)
+                    stdin.flush()
+                for line in stdout:
+                    log.info("%s> %s", self.hostname, line.strip())
+                for line in stderr:
+                    log.warning("%s> %s", self.hostname, line.strip())
+            except socket.timeout:
+                raise RuntimeError("Timeout while executing command: %s"
+                                   % cmd)
+
+    def install_ssh_keys(self, pubkey, privkey):
+        """Install ssh keys on a newly provisioned node"""
+        log.info("Installing ssh keys on %s", self.hostname)
+
+        ssh_folder = "/home/{}/.ssh".format(self.username)
+        sftp = self.sftp
+        try:
+            sftp.mkdir(ssh_folder)
+        except IOError:
+            # folder already exists
+            pass
+
+        # Upload the cluster keys on the node
+        sftp.put(pubkey, ssh_folder + '/id_rsa.pub')
+        sftp.put(privkey, ssh_folder + '/id_rsa')
+
+        # Add the public key to the authorized keys for later reconnection
+        # without password.
+        with sftp.open(ssh_folder + '/authorized_keys', 'w') as f:
+            f.write(open(pubkey, 'rb').read())
+            f.write('\n')
+
+            # Optionally deploy the local public key of the current user
+            id_rsa_pub = os.path.expanduser('~/.ssh/id_rsa.pub')
+            if os.path.exists(id_rsa_pub):
+                f.write(open(id_rsa_pub, 'rb').read())
+                f.write('\n')
+
+    def setup_sudo_nopasswd(self):
+        """Remove the password requirements for sudoing
+
+        For long running clusters, we don't store the password locally, hence
+        we might want to trust the ssh auth for sudo operations.
+
+        """
+        log.info("Disabling password check for sudo")
+        script_file = "/home/{}/nopasswd.py".format(self.username)
+        with self.sftp.open(script_file, 'w+') as f:
+            f.write(NOPASSWD_SCRIPT)
+
+        # Note: any sudo command needs a pseudo TTY interface on recent linux
+        # boxes
+        cmd = "sudo python " + script_file
+        self.exec_command(cmd, timeout=5, payload_stdin=self.password + '\n')
+
+    def bootstrap_salt(self, master_ip_address=None):
+        log.info("Boostrapping salt on '%s'", self.hostname)
+
+        cmd = "sudo /bin/sh -c 'echo \"{} salt\" >> /etc/hosts'"
+        if master_ip_address is None:
+            # This node is the master
+            # Add localhost as salt master in local dns
+            self.exec_command(cmd.format('127.0.0.1'), timeout=1)
+        else:
+            self.exec_command(cmd.format(master_ip_address), timeout=1)
+
+        # Install and run both master and local minion on host
+        cmd = "wget -q -O bootstrap-salt.sh http://bootstrap.saltstack.org"
+        self.exec_command(cmd, timeout=60)
+
+        if master_ip_address is None:
+            # This node is the master
+            self.exec_command("sudo sh bootstrap-salt.sh -M", timeout=60)
+
+            # Accept the key from the local minion
+            self.exec_command("sudo salt-key -A", timeout=5)
+
+            # Check that salt is running as expected and the local minion is
+            # connected
+            self.exec_command("sudo salt '*' cmd.run 'uname -a'", timeout=10)
+
+        else:
+            # Just bootstrap the minion daemon
+            self.exec_command("sudo sh bootstrap-salt.sh", timeout=60)
+
+            # TODO: accept the minion key on the master or pre-provision the
+            # minion key instead
+
+    def connect(self):
+        self.ssh = self._make_ssh_client(self.n_tries, self.sleep_duration)
+        self.sftp = self.ssh.open_sftp()
+
+    def disconnect(self):
+        self.sftp.close()
+        self.ssh.close()
+
+    def _make_ssh_client(self, n_tries, sleep_duration):
+        c = SSHClient()
+        c.set_missing_host_key_policy(AutoAddPolicy())
+        for i in range(n_tries):
+            try:
+                c.connect(self.hostname, username=self.username,
+                          password=self.password,
+                          key_filename=self.key_filename)
+                return c
+            except socket.error as e:
+                log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
+                         self.hostname, i + 1, n_tries, sleep_duration)
+                time.sleep(sleep_duration)
+        raise e
+
+    def __del__(self):
+        self.disconnect()
+
+
 class Provisioner(object):
     """Controller class to provision an IPython cluster."""
 
@@ -121,7 +265,6 @@ class Provisioner(object):
         if service_name is None:
             service_name = username + '-ipython'
         self.service_name = service_name
-        self.hostname = "{}.cloudapp.net".format(self.service_name)
 
         if affinity_group is None:
             self.affinity_group = service_name
@@ -155,6 +298,7 @@ class Provisioner(object):
 
         self.sms = ServiceManagementService(subscription_id, certificate_path)
         self.provisioning_requests = []
+        self.master_controller = None
 
     def launch_node(self, role_size='Small', ports_config=DEFAULT_PORTS,
                     async=False):
@@ -283,7 +427,7 @@ class Provisioner(object):
             raise RuntimeError("Service '%s' has already been deployed" %
                                self.service_name)
         if not async:
-            self._wait_for_async(request.request_id,
+            self._wait_for_async(request.request_id, self.service_name,
                                  success_callback=self.deploy_ip_master_node)
 
     def destroy_node(self, destroy_vm=True, destroy_disk=True,
@@ -291,19 +435,6 @@ class Provisioner(object):
         """Destroy any running instance and related provisioned resources"""
         # TODO
         pass
-
-    def deploy_ip_master_node(self):
-        """Use ssh to install the IPCluster master node"""
-        log.info("Configuring provisioned host '%s'", self.hostname)
-        ssh = self.make_ssh_client(n_tries=10)
-        sftp = ssh.open_sftp()
-        try:
-            self._install_ssh_keys(sftp)
-            self._setup_sudo_nopasswd(ssh, sftp)
-            self._bootstrap_salt_master(ssh, sftp)
-        finally:
-            sftp.close()
-            ssh.close()
 
     def get_ssh_keyfiles(self):
         """Generate a dedicated keypair for service or reuse previous"""
@@ -322,7 +453,28 @@ class Provisioner(object):
                 f.write("{} {}".format(k.get_name(), k.get_base64()))
         return pubkey_filename, privkey_filename
 
-    def _wait_for_async(self, request_id, success_callback=None,
+    def deploy_master_node(self):
+        """Use ssh to install master node with saltstack"""
+        hostname = "{}.cloudapp.net".format(self.service_name)
+        log.info("Configuring provisioned host '%s'", hostname)
+
+        if self.master_controller == None:
+            _, priv_key = self.get_ssh_keyfiles()
+            self.master_controller = NodeController(hostname, self.username,
+                password=self.password, key_filename=priv_key, n_tries=10,
+                sleep_duration=30)
+
+        ctl = self.master_controller
+        ctl.setup_sudo_nopasswd()
+        #ctl.upload_folder(salt_profile_folder, '/srv/salt')
+        ctl.bootstrap_salt()
+
+        # Keys are put the home folder after the salt config has been
+        # generated to be able to benefit from a home folder shared via NFS
+        # in the salt state configuration for instance.
+        ctl.install_ssh_keys(*self.get_ssh_keyfiles())
+
+    def _wait_for_async(self, request_id, service_name, success_callback=None,
                         expected=('Succeeded',), n_tries=10,
                         sleep_duration=30):
         for i in range(n_tries):
@@ -333,9 +485,9 @@ class Provisioner(object):
             except socket.error as e:
                 log.warn("Ingnored socket error: %s", e)
 
-            log.info("Waiting for request on host '%s',"
+            log.info("Waiting for request on '%s',"
                      " retrying (%d/%d) in %ds...",
-                     self.hostname, i + 1, n_tries, sleep_duration)
+                     service_name, i + 1, n_tries, sleep_duration)
             time.sleep(sleep_duration)
 
         if result.status not in expected:
@@ -346,102 +498,3 @@ class Provisioner(object):
             raise RuntimeError(msg)
         if success_callback is not None:
             success_callback()
-
-    def make_ssh_client(self, n_tries=1, sleep_duration=30):
-        c = SSHClient()
-        c.set_missing_host_key_policy(AutoAddPolicy())
-        _, private_key = self.get_ssh_keyfiles()
-        for i in range(n_tries):
-            try:
-                c.connect(self.hostname, username=self.username,
-                          password=self.password, key_filename=private_key)
-                return c
-            except socket.error as e:
-                log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
-                         self.hostname, i + 1, n_tries, sleep_duration)
-                time.sleep(sleep_duration)
-        raise e
-
-    def _install_ssh_keys(self, sftp):
-        """Install ssh keys on a newly provisioned node"""
-        log.info("Installing ssh keys on %s", self.service_name)
-
-        pubkey, privkey = self.get_ssh_keyfiles()
-        ssh_folder = "/home/{}/.ssh".format(self.username)
-        try:
-            sftp.mkdir(ssh_folder)
-        except IOError:
-            # folder already exists
-            pass
-        sftp.put(pubkey, ssh_folder + '/id_rsa.pub')
-        sftp.put(privkey, ssh_folder + '/id_rsa')
-        with sftp.open(ssh_folder + '/authorized_keys', 'w') as f:
-            f.write(open(pubkey, 'rb').read())
-            f.write('\n')
-            id_rsa_pub = os.path.expanduser('~/.ssh/id_rsa.pub')
-            if os.path.exists('id_rsa_pub'):
-                f.write(open(id_rsa_pub, 'rb').read())
-                f.write('\n')
-
-    @staticmethod
-    def _execute_in_pty(hostname, ssh, cmd, timeout=None, payload_stdin=None,
-                        bufsize=-1):
-        log.info("Executing '%s' on '%s':", cmd, hostname)
-        with closing(ssh.get_transport().open_session()) as chan:
-            if timeout is not None:
-                chan.settimeout(timeout)
-            chan.get_pty()
-            chan.exec_command(cmd)
-            stdin = chan.makefile('wb', bufsize)
-            stdout = chan.makefile('rb', bufsize)
-            stderr = chan.makefile_stderr('rb', bufsize)
-            try:
-
-                if payload_stdin is not None:
-                    stdin.write(payload_stdin)
-                    stdin.flush()
-                for line in stdout:
-                    log.info("%s> " + line.strip(), hostname)
-                for line in stderr:
-                    log.warning("%s> " + line.strip(), hostname)
-            except socket.timeout:
-                raise RuntimeError("Timeout while executing command: %s"
-                                   % cmd)
-
-    def _setup_sudo_nopasswd(self, ssh, sftp):
-        """Remove the password requirements for sudoing
-
-        For long running clusters, we don't store the password locally, hence
-        we might want to trust the ssh auth for sudo operations.
-
-        """
-        log.info("Disabling password check for sudo")
-        script_file = "/home/{}/nopasswd.py".format(self.username)
-        with sftp.open(script_file, 'w+') as f:
-            f.write(NOPASSWD_SCRIPT)
-        cmd = "sudo python " + script_file
-        # Any sudo command needs a pseudo TTY interface on recent linux boxes
-        self._execute_in_pty(self.hostname, ssh, cmd, timeout=5,
-                             payload_stdin=self.password + '\n')
-
-    def _bootstrap_salt_master(self, ssh, sftp):
-        log.info("Boostrapping salt master on '%s'", self.hostname)
-
-        # Add localhost as salt master in local dns
-        cmd = "sudo /bin/sh -c 'echo \"127.0.0.1 salt\" >> /etc/hosts'"
-        self._execute_in_pty(self.hostname, ssh, cmd, timeout=1)
-
-        # Install and run both master and local minion on host
-        cmd = "wget -q -O bootstrap-salt.sh http://bootstrap.saltstack.org"
-        self._execute_in_pty(self.hostname, ssh, cmd, timeout=60)
-        cmd = "sudo sh bootstrap-salt.sh -M"
-        self._execute_in_pty(self.hostname, ssh, cmd, timeout=60)
-
-        # Accept the key from the local minion
-        cmd = "sudo salt-key -A"
-        self._execute_in_pty(self.hostname, ssh, cmd, timeout=5)
-
-        # Check that salt is running as expected and the local minion is
-        # connected
-        cmd = "sudo salt '*' cmd.run 'uname -a'"
-        self._execute_in_pty(self.hostname, ssh, cmd, timeout=10)
