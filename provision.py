@@ -349,34 +349,13 @@ class Provisioner(object):
 
     def make_ssh_client(self, n_tries=1, sleep_duration=30):
         c = SSHClient()
-        c.load_system_host_keys()
         c.set_missing_host_key_policy(AutoAddPolicy())
         _, private_key = self.get_ssh_keyfiles()
         for i in range(n_tries):
             try:
-                try:
-                    c.connect(self.hostname, username=self.username,
-                              password=self.password, key_filename=private_key)
-                    return c
-                except BadHostKeyException:
-                    log.warn("Host key has changed for host: '%s'",
-                             self.hostname)
-                    # Remove the offending key and retry once
-                    known_hosts_file = os.path.expanduser('~/.ssh/known_hosts')
-                    with open(known_hosts_file, 'rb') as f:
-                        known_hosts = f.readlines()
-                    known_hosts = [
-                        kh for kh in known_hosts
-                        if kh.split()[0].split(',')[0] != self.hostname
-                    ]
-                    with open(known_hosts_file, 'wb') as f:
-                        f.write("".join(known_hosts))
-                    c = SSHClient()
-                    c.load_system_host_keys()
-                    c.set_missing_host_key_policy(AutoAddPolicy())
-                    c.connect(self.hostname, username=self.username,
-                              password=self.password, key_filename=private_key)
-                    return c
+                c.connect(self.hostname, username=self.username,
+                          password=self.password, key_filename=private_key)
+                return c
             except socket.error as e:
                 log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
                          self.hostname, i + 1, n_tries, sleep_duration)
