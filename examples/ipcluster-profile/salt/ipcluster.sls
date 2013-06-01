@@ -13,3 +13,7 @@ python-matplotlib:
 ipython:
   pkg:
     - installed
+
+ipython-notebook:
+  pkg:
+    - installed
