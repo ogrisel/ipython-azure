@@ -11,9 +11,7 @@ from contextlib import closing
 
 from paramiko import RSAKey
 from paramiko import SSHClient
-from paramiko import SFTPClient
 from paramiko import AutoAddPolicy
-from paramiko import BadHostKeyException
 
 from azure import WindowsAzureConflictError
 from azure import WindowsAzureMissingResourceError
@@ -115,7 +113,8 @@ class NodeController(object):
     """Class to remotely control a VM instance with ssh"""
 
     def __init__(self, hostname, username, password=None,
-                 key_filename=None, n_tries=1, sleep_duration=30):
+                 key_filename=None, n_tries=1, sleep_duration=30,
+                 timeout=10):
         self.hostname = hostname
         self.username = username
         self.password = password
@@ -123,6 +122,7 @@ class NodeController(object):
 
         self.n_tries = n_tries
         self.sleep_duration = sleep_duration
+        self.timeout = timeout
         self.connect()
 
     def exec_command(self, cmd, use_pty=True, timeout=None,
@@ -264,7 +264,8 @@ class NodeController(object):
             try:
                 c.connect(self.hostname, username=self.username,
                           password=self.password,
-                          key_filename=self.key_filename)
+                          key_filename=self.key_filename,
+                          timeout=self.timeout)
                 return c
             except socket.error as e:
                 log.info("Host '%s' not found, retrying (%d/%d) in %ds...",
@@ -404,10 +405,13 @@ class Provisioner(object):
                 keys = self.sms.get_storage_account_keys(
                     self.storage_account_name)
                 break
-            except WindowsAzureMissingResourceError, socket.gaierror:
+            except WindowsAzureMissingResourceError:
                 log.info("Not found, retrying (%d/%d) in %ds...", i + 1,
                          n_tries, sleep_duration)
-                time.sleep(sleep_duration)
+            except socket.gaierror as e:
+                log.error("Error: %s, retrying (%d/%d) in %ds...", e, i + 1,
+                          n_tries, sleep_duration)
+            time.sleep(sleep_duration)
         if keys is None:
             raise RuntimeError("Failed to fetch keys for storage account '%s'"
                                % self.storage_account_name)
@@ -486,11 +490,11 @@ class Provisioner(object):
         hostname = "{}.cloudapp.net".format(self.service_name)
         log.info("Configuring provisioned host '%s'", hostname)
 
-        if self.master_controller == None:
+        if self.master_controller is None:
             _, priv_key = self.get_ssh_keyfiles()
-            self.master_controller = NodeController(hostname, self.username,
-                password=self.password, key_filename=priv_key, n_tries=10,
-                sleep_duration=30)
+            self.master_controller = NodeController(
+                hostname, self.username, password=self.password,
+                key_filename=priv_key, n_tries=10, sleep_duration=30)
 
         ctl = self.master_controller
         ctl.setup_sudo_nopasswd()
