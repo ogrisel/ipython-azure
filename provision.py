@@ -123,11 +123,14 @@ class NodeController(object):
         self.n_tries = n_tries
         self.sleep_duration = sleep_duration
         self.timeout = timeout
-        self.connect()
+        self.ssh = None
+        self.sftp = None
 
     def exec_command(self, cmd, use_pty=True, timeout=None,
                      payload_stdin=None, bufsize=-1):
         log.info("Executing '%s' on '%s':", cmd, self.hostname)
+        self.check_connect()
+
         with closing(self.ssh.get_transport().open_session()) as chan:
             if timeout is not None:
                 chan.settimeout(timeout)
@@ -147,12 +150,14 @@ class NodeController(object):
                 for line in stderr:
                     log.warning("%s> %s", self.hostname, line.strip())
             except socket.timeout:
+                self.disconnect()
                 raise RuntimeError("Timeout while executing command: %s"
                                    % cmd)
 
     def install_ssh_keys(self, pubkey, privkey):
         """Install ssh keys on a newly provisioned node"""
         log.info("Installing ssh keys on %s", self.hostname)
+        self.check_connect()
 
         ssh_folder = "/home/{}/.ssh".format(self.username)
         sftp = self.sftp
@@ -186,6 +191,8 @@ class NodeController(object):
 
         """
         log.info("Disabling password check for sudo")
+        self.check_connect()
+
         script_file = "/home/{}/nopasswd.py".format(self.username)
         with self.sftp.open(script_file, 'w+') as f:
             f.write(NOPASSWD_SCRIPT)
@@ -227,6 +234,7 @@ class NodeController(object):
         return "'{}'".format(path.replace("'", "\\'"))
 
     def upload_folder(self, local_path, remote_path, delete=False):
+        self.check_connect()
         quoted_remote_path = self.quote(remote_path)
         if delete:
             self.exec_command("sudo rm -rf " + quoted_remote_path)
@@ -254,8 +262,18 @@ class NodeController(object):
         self.sftp = self.ssh.open_sftp()
 
     def disconnect(self):
-        self.sftp.close()
-        self.ssh.close()
+        if self.sftp is None:
+            self.sftp.close()
+        if self.ssh is None:
+            self.ssh.close()
+
+    def check_connect(self):
+        if self.ssh is None or self.sftp is None:
+            self.connect()
+
+    def reconnect(self):
+        self.disconnect()
+        self.connect()
 
     def _make_ssh_client(self, n_tries, sleep_duration):
         c = SSHClient()
@@ -511,7 +529,7 @@ class Provisioner(object):
         ctl.install_ssh_keys(*self.get_ssh_keyfiles())
 
         # Install everything from the provided profile
-        ctl.exec_command("sudo salt '*' state.highstate", timeout=300)
+        ctl.exec_command("sudo salt '*' state.highstate", timeout=1200)
 
     def _wait_for_async(self, request_id, service_name, success_callback=None,
                         expected=('Succeeded',), n_tries=10,
