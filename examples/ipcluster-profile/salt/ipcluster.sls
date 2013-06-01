@@ -1,19 +1,9 @@
-python-numpy:
-  pkg:
-    - installed
-
-python-scipy:
-  pkg:
-    - installed
-
-python-matplotlib:
-  pkg:
-    - installed
-
-ipython:
-  pkg:
-    - installed
-
-ipython-notebook:
-  pkg:
-    - installed
+scipy-stack-packages:
+    pkg:
+        - installed
+        - names:
+            - python-numpy
+            - python-scipy
+            - python-matplotlib
+            - ipython
+            - ipython-notebook
