@@ -229,6 +229,13 @@ class NodeController(object):
             # Just bootstrap the minion daemon
             self.exec_command("sudo sh bootstrap-salt.sh", timeout=60)
 
+    def upload_salt_profile(self, salt_profile):
+        for folder in os.listdir(salt_profile):
+            folder_path = os.path.join(salt_profile, folder)
+            if os.path.exists(folder_path):
+                log.info("Uploading configuration from: %s", folder_path)
+                self.upload_folder(folder_path, '/srv/' + folder, delete=True)
+
     @staticmethod
     def quote(path):
         return "'{}'".format(path.replace("'", "\\'"))
@@ -503,24 +510,23 @@ class Provisioner(object):
                 f.write("{} {}".format(k.get_name(), k.get_base64()))
         return pubkey_filename, privkey_filename
 
+    def get_master_controller(self):
+        if self.master_controller is None:
+            hostname = "{}.cloudapp.net".format(self.service_name)
+            _, priv_key = self.get_ssh_keyfiles()
+            self.master_controller = NodeController(
+                hostname, self.username, password=self.password,
+                key_filename=priv_key, n_tries=10, sleep_duration=30)
+        return self.master_controller
+
     def deploy_master_node(self):
         """Use ssh to install master node with saltstack"""
         hostname = "{}.cloudapp.net".format(self.service_name)
         log.info("Configuring provisioned host '%s'", hostname)
 
-        if self.master_controller is None:
-            _, priv_key = self.get_ssh_keyfiles()
-            self.master_controller = NodeController(
-                hostname, self.username, password=self.password,
-                key_filename=priv_key, n_tries=10, sleep_duration=30)
-
-        ctl = self.master_controller
+        ctl = self.get_master_controller()
         ctl.setup_sudo_nopasswd()
-        for folder in os.listdir(self.salt_profile):
-            folder_path = os.path.join(self.salt_profile, folder)
-            if os.path.exists(folder_path):
-                log.info("Uploading configuration from: %s", folder_path)
-                ctl.upload_folder(folder_path, '/srv/' + folder, delete=True)
+        ctl.upload_salt_profile(self.salt_profile)
         ctl.bootstrap_salt()
 
         # Keys are put the home folder after the salt config has been
@@ -529,6 +535,14 @@ class Provisioner(object):
         ctl.install_ssh_keys(*self.get_ssh_keyfiles())
 
         # Install everything from the provided profile
+        ctl.exec_command("sudo salt '*' state.highstate", timeout=1200)
+
+    def refresh_salt(self, salt_profile=None):
+        if salt_profile is None:
+            salt_profile = self.salt_profile
+        log.info("Reuploading updated salt profile '%s'", salt_profile)
+        ctl = self.get_master_controller()
+        ctl.upload_salt_profile(self.salt_profile)
         ctl.exec_command("sudo salt '*' state.highstate", timeout=1200)
 
     def _wait_for_async(self, request_id, service_name, success_callback=None,
