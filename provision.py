@@ -351,7 +351,6 @@ class Provisioner(object):
 
         self.sms = ServiceManagementService(subscription_id, certificate_path)
         self.provisioning_requests = []
-        self.master_controller = None
         self.salt_profile = salt_profile
 
     def launch_node(self, role_size='Small', ports_config=DEFAULT_PORTS,
@@ -511,13 +510,11 @@ class Provisioner(object):
         return pubkey_filename, privkey_filename
 
     def get_master_controller(self):
-        if self.master_controller is None:
-            hostname = "{}.cloudapp.net".format(self.service_name)
-            _, priv_key = self.get_ssh_keyfiles()
-            self.master_controller = NodeController(
-                hostname, self.username, password=self.password,
-                key_filename=priv_key, n_tries=10, sleep_duration=30)
-        return self.master_controller
+        hostname = "{}.cloudapp.net".format(self.service_name)
+        _, priv_key = self.get_ssh_keyfiles()
+        return NodeController(
+            hostname, self.username, password=self.password,
+            key_filename=priv_key, n_tries=10, sleep_duration=30)
 
     def deploy_master_node(self):
         """Use ssh to install master node with saltstack"""
