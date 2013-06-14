@@ -219,15 +219,15 @@ class NodeController(object):
 
         if master_ip_address is None:
             # This node is the master
-            self.exec_command("sudo sh bootstrap-salt.sh -M", timeout=60)
+            self.exec_command("sudo sh bootstrap-salt.sh -M", timeout=300)
             # Accept the key from the local minion
-            self.exec_command("sudo salt-key -A", timeout=5)
+            self.exec_command("sudo salt-key -A", timeout=10)
             # Check that salt is running as expected and the local minion is
             # connected
             self.exec_command("sudo salt '*' cmd.run 'uname -a'", timeout=10)
         else:
             # Just bootstrap the minion daemon
-            self.exec_command("sudo sh bootstrap-salt.sh", timeout=60)
+            self.exec_command("sudo sh bootstrap-salt.sh", timeout=300)
 
     def upload_salt_profile(self, salt_profile):
         for folder in os.listdir(salt_profile):
@@ -308,8 +308,8 @@ class Provisioner(object):
     def __init__(self, service_name=None, storage_account_name=None,
                  affinity_group=None, username=None,
                  location='West US', subscription_id=None,
-                 certificate_path='~/azure.pem', image_name=None,
-                 password=None, finger_print=None,
+                 certificate_path='~/.azure/managementCertificate.pem',
+                 image_name=None, password=None, finger_print=None,
                  keys_folder='~/.ipazure/keys',
                  salt_profile=DEFAULT_SALT_PROFILE):
         if username is None:
@@ -514,7 +514,7 @@ class Provisioner(object):
         _, priv_key = self.get_ssh_keyfiles()
         return NodeController(
             hostname, self.username, password=self.password,
-            key_filename=priv_key, n_tries=10, sleep_duration=30)
+            key_filename=priv_key, n_tries=30, sleep_duration=30)
 
     def deploy_master_node(self):
         """Use ssh to install master node with saltstack"""
