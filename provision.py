@@ -28,8 +28,8 @@ DEFAULT_SALT_PROFILE = os.path.join(os.path.dirname(__file__), 'salt-profile')
 
 
 DEFAULT_PORTS = (
-    ('http', 'tcp', '80', '80'),
-    ('https', 'tcp', '443', '443'),
+    ('http', 'tcp', '80', '8888'),
+    ('https', 'tcp', '443', '8443'),
     ('ssh', 'tcp', '22', '22'),
     ('salt-master-1', 'tcp', '4505', '4505'),
     ('salt-master-2', 'tcp', '4506', '4506'),
@@ -209,9 +209,9 @@ class NodeController(object):
         if master_ip_address is None:
             # This node is the master
             # Add localhost as salt master in local dns
-            self.exec_command(cmd.format('127.0.0.1'), timeout=1)
+            self.exec_command(cmd.format('127.0.0.1'), timeout=10)
         else:
-            self.exec_command(cmd.format(master_ip_address), timeout=1)
+            self.exec_command(cmd.format(master_ip_address), timeout=10)
 
         # Install and run both master and local minion on host
         cmd = "wget -q -O bootstrap-salt.sh http://bootstrap.saltstack.org"
@@ -224,7 +224,7 @@ class NodeController(object):
             self.exec_command("sudo salt-key -A", timeout=10)
             # Check that salt is running as expected and the local minion is
             # connected
-            self.exec_command("sudo salt '*' cmd.run 'uname -a'", timeout=10)
+            self.exec_command("sudo salt '*' cmd.run 'uname -a'", timeout=30)
         else:
             # Just bootstrap the minion daemon
             self.exec_command("sudo sh bootstrap-salt.sh", timeout=300)
@@ -459,7 +459,7 @@ class Provisioner(object):
         if self.image_name is None:
             # Select the last Ubuntu daily build
             self.image_name = [i.name for i in self.sms.list_os_images()
-                               if 'Ubuntu_DAILY_BUILD' in i.name][-1]
+                               if 'Ubuntu-13_04' in i.name][-1]
 
         log.info("Using OS image '%s' at: %s", self.image_name, os_image_url)
         os_hd = OSVirtualHardDisk(self.image_name, os_image_url,
