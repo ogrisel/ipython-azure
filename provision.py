@@ -232,7 +232,7 @@ class NodeController(object):
     def upload_salt_profile(self, salt_profile):
         for folder in os.listdir(salt_profile):
             folder_path = os.path.join(salt_profile, folder)
-            if os.path.exists(folder_path):
+            if os.path.isdir(folder_path):
                 log.info("Uploading configuration from: %s", folder_path)
                 self.upload_folder(folder_path, '/srv/' + folder, delete=True)
 
@@ -306,7 +306,7 @@ class Provisioner(object):
     """Controller class to provision an IPython cluster."""
 
     def __init__(self, service_name=None, storage_account_name=None,
-                 affinity_group=None, username=None,
+                 affinity_group=None, username='ipuser',
                  location='West US', subscription_id=None,
                  certificate_path='~/.azure/managementCertificate.pem',
                  image_name=None, password=None, finger_print=None,
@@ -333,6 +333,7 @@ class Provisioner(object):
         self.location = location
         self.image_name = image_name
 
+        # TODO: read the json configuration file in .azure
         if subscription_id is None:
             subscription_id = os.environ['AZURE_SUBSCRIPTION_ID']
         self.subscription_id = subscription_id
@@ -356,6 +357,8 @@ class Provisioner(object):
     def launch_node(self, role_size='Small', ports_config=DEFAULT_PORTS,
                     async=False):
         """Launch a new instance for the service"""
+        log.info('Provisioning node with subscription_id="%s"',
+                 self.subscription_id)
         # Provision an hosted service
         target_blob_name = self.service_name + ".vhd"
         service_label = self.service_name
@@ -516,7 +519,7 @@ class Provisioner(object):
             hostname, self.username, password=self.password,
             key_filename=priv_key, n_tries=30, sleep_duration=30)
 
-    def deploy_master_node(self):
+    def deploy_master_node(self, home_folder='home_folder'):
         """Use ssh to install master node with saltstack"""
         hostname = "{}.cloudapp.net".format(self.service_name)
         log.info("Configuring provisioned host '%s'", hostname)
@@ -525,6 +528,9 @@ class Provisioner(object):
         ctl.setup_sudo_nopasswd()
         ctl.upload_salt_profile(self.salt_profile)
         ctl.bootstrap_salt()
+
+        log.info("Uploading files from: %s", home_folder)
+        ctl.upload_folder(home_folder, '/home/' + self.username)
 
         # Keys are put the home folder after the salt config has been
         # generated to be able to benefit from a home folder shared via NFS
