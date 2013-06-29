@@ -310,7 +310,7 @@ class Provisioner(object):
                  location='West US', subscription_id=None,
                  certificate_path='~/.azure/managementCertificate.pem',
                  image_name=None, password=None, finger_print=None,
-                 keys_folder='~/.ipazure/keys',
+                 keys_folder='~/.azure/keys',
                  salt_profile=DEFAULT_SALT_PROFILE):
         if username is None:
             username = os.getlogin()
