@@ -9,4 +9,4 @@ else:
 p = provision.Provisioner(sys.argv[1])
 p.launch_node(role_size='ExtraLarge')
 
-print('Demo launched on: %s.cloudapp.net' % p.service_name)
+print('Demo launched on: http://%s.cloudapp.net' % p.service_name)
