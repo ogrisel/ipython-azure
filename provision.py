@@ -7,6 +7,7 @@ import logging
 import time
 import string
 import socket
+import json
 from contextlib import closing
 
 from paramiko import RSAKey
@@ -311,7 +312,8 @@ class Provisioner(object):
                  certificate_path='~/.azure/managementCertificate.pem',
                  image_name=None, password=None, finger_print=None,
                  keys_folder='~/.azure/keys',
-                 salt_profile=DEFAULT_SALT_PROFILE):
+                 salt_profile=DEFAULT_SALT_PROFILE,
+                 azure_config_file='~/.azure/config.json'):
         if username is None:
             username = os.getlogin()
         self.username = username
@@ -333,9 +335,11 @@ class Provisioner(object):
         self.location = location
         self.image_name = image_name
 
-        # TODO: read the json configuration file in .azure
         if subscription_id is None:
-            subscription_id = os.environ['AZURE_SUBSCRIPTION_ID']
+            azure_config_file = os.path.expanduser(azure_config_file)
+            with open(azure_config_file, 'rb') as f:
+                subscription_id = json.load(f)['subscription']
+
         self.subscription_id = subscription_id
 
         certificate_path = os.path.expanduser(certificate_path)
