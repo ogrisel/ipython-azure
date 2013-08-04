@@ -84,8 +84,8 @@ def network_configuration_to_xml(configuration):
              ('Port', endpoint.port)])
 
         if (endpoint.load_balancer_probe.path
-            or endpoint.load_balancer_probe.port
-            or endpoint.load_balancer_probe.protocol):
+                or endpoint.load_balancer_probe.port
+                or endpoint.load_balancer_probe.protocol):
             xml += '<LoadBalancerProbe>'
             xml += _XmlSerializer.data_to_xml(
                 [('Path', endpoint.load_balancer_probe.path),
@@ -115,7 +115,7 @@ class NodeController(object):
 
     def __init__(self, hostname, username, password=None,
                  key_filename=None, n_tries=1, sleep_duration=30,
-                 timeout=10):
+                 timeout=60):
         self.hostname = hostname
         self.username = username
         self.password = password
@@ -201,7 +201,7 @@ class NodeController(object):
         # Note: any sudo command needs a pseudo TTY interface on recent linux
         # boxes
         cmd = "sudo python " + script_file
-        self.exec_command(cmd, timeout=5, payload_stdin=self.password + '\n')
+        self.exec_command(cmd, payload_stdin=self.password + '\n')
 
     def bootstrap_salt(self, master_ip_address=None):
         log.info("Boostrapping salt on '%s'", self.hostname)
@@ -210,22 +210,22 @@ class NodeController(object):
         if master_ip_address is None:
             # This node is the master
             # Add localhost as salt master in local dns
-            self.exec_command(cmd.format('127.0.0.1'), timeout=10)
+            self.exec_command(cmd.format('127.0.0.1'))
         else:
-            self.exec_command(cmd.format(master_ip_address), timeout=10)
+            self.exec_command(cmd.format(master_ip_address))
 
         # Install and run both master and local minion on host
         cmd = "wget -q -O bootstrap-salt.sh http://bootstrap.saltstack.org"
-        self.exec_command(cmd, timeout=60)
+        self.exec_command(cmd, timeout=300)
 
         if master_ip_address is None:
             # This node is the master
             self.exec_command("sudo sh bootstrap-salt.sh -M", timeout=300)
             # Accept the key from the local minion
-            self.exec_command("sudo salt-key -A", timeout=10)
+            self.exec_command("sudo salt-key -A")
             # Check that salt is running as expected and the local minion is
             # connected
-            self.exec_command("sudo salt '*' cmd.run 'uname -a'", timeout=30)
+            self.exec_command("sudo salt '*' cmd.run 'uname -a'")
         else:
             # Just bootstrap the minion daemon
             self.exec_command("sudo sh bootstrap-salt.sh", timeout=300)
@@ -308,7 +308,7 @@ class Provisioner(object):
 
     def __init__(self, service_name=None, storage_account_name=None,
                  affinity_group=None, username='ipuser',
-                 location='West US', subscription_id=None,
+                 location='Central US', subscription_id=None,
                  certificate_path='~/.azure/managementCertificate.pem',
                  image_name=None, password=None, finger_print=None,
                  keys_folder='~/.azure/keys',
@@ -508,7 +508,7 @@ class Provisioner(object):
                                         self.service_name + '_rsa')
         pubkey_filename = privkey_filename + '.pub'
         if (not os.path.exists(privkey_filename)
-            or not os.path.exists(pubkey_filename)):
+                or not os.path.exists(pubkey_filename)):
             # Generate a passwordless keypair
             k = RSAKey.generate(2048)
             k.write_private_key_file(privkey_filename)
