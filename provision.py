@@ -222,7 +222,9 @@ class NodeController(object):
             # This node is the master
             self.exec_command("sudo sh bootstrap-salt.sh -M", timeout=300)
             # Accept the key from the local minion
-            self.exec_command("sudo salt-key -A")
+            # TODO: use key pre-seeding instead
+            node_name = self.hostname.split('.', 1)[0]
+            self.exec_command("sudo salt-key -a " + node_name)
             # Check that salt is running as expected and the local minion is
             # connected
             self.exec_command("sudo salt '*' cmd.run 'uname -a'")
